@@ -2,7 +2,7 @@
 
 > **Documentación técnica oficial**
 > **Materia:** Inteligencia Artificial
-> **Stack:** Python 3.12 · MediaPipe 0.10.18 · OpenCV 4.11 · NumPy · pyttsx3
+> **Stack:** Python 3.12 · MediaPipe 0.10.18 · OpenCV 4.11 (incluye `solvePnP`) · NumPy · pyttsx3
 > **Repositorio:** https://github.com/TheCubick/Proyecto-Lenguaje-de-se-a
 
 ### Leyenda de estado
@@ -21,9 +21,9 @@ En este documento cada componente lleva una etiqueta que indica su grado de avan
 
 1. [Descripción general](#1-descripción-general)
 2. [Arquitectura del sistema (enfoque multimodal)](#2-arquitectura-del-sistema-enfoque-multimodal)
-   - 2.1 [Módulo de manos: alfabeto estático](#21-módulo-de-manos-alfabeto-estático-mediapipe-hands)
-   - 2.2 [Señas con movimiento](#22-señas-con-movimiento-buffer-de-trayectoria)
-   - 2.3 [Módulo facial](#23-módulo-facial-componentes-no-manuales)
+   - 2.1 [Módulo de manos: dos manos y geometría 3D](#21-módulo-de-manos-dos-manos-y-geometría-3d-mediapipe-hands)
+   - 2.2 [Señas con movimiento](#22-señas-con-movimiento-buffer-de-trayectoria-por-mano)
+   - 2.3 [Módulo facial](#23-módulo-facial-pose-3d-de-la-cabeza-y-cejas)
    - 2.4 [Voz asíncrona](#24-voz-asíncrona-text-to-speech)
 3. [Flujo de trabajo y experiencia de usuario](#3-flujo-de-trabajo-y-experiencia-de-usuario-ux--ui)
 4. [Integración de hardware](#4-integración-de-hardware)
@@ -45,8 +45,8 @@ El sistema traduce **en tiempo real** el **alfabeto dactilológico completo de l
 
 | Canal | Qué aporta | Estado |
 |---|---|---|
-| **Manual** (manos) | Qué letra o seña se hace: 21 letras estáticas, 6 letras con movimiento y señas de control | Implementado |
-| **No manual** (rostro y cabeza) | Si la frase es pregunta, negación o afirmación | Implementado |
+| **Manual** (manos) | Qué letra o seña se hace: 21 letras estáticas, 6 letras con movimiento y señas de control, **con cualquiera de las dos manos o con ambas a la vez** | Implementado |
+| **No manual** (rostro y cabeza) | Si la frase es pregunta, negación o afirmación, a partir de la **pose 3D real de la cabeza** | Implementado |
 | **Voz** | Dice cada letra al registrarla y lee la palabra completa | Implementado |
 
 La LSM no se comunica solo con las manos: los **componentes no manuales** (expresión facial, movimientos de cabeza) tienen función gramatical. Por eso la arquitectura es **multimodal**.
@@ -57,15 +57,17 @@ La comunidad sorda enfrenta barreras de comunicación cotidianas con personas oy
 
 ### 1.3 Enfoque técnico
 
-1. **Estimación de pose con aprendizaje profundo** (modelos preentrenados de MediaPipe): 21 puntos clave por mano y 468 por rostro.
-2. **Clasificadores geométricos basados en reglas**, diseñados por el equipo y **calibrados con grabaciones reales**: distancias normalizadas, ángulos articulares, proyecciones vectoriales y análisis de trayectorias.
+1. **Estimación de pose con aprendizaje profundo** (modelos preentrenados de MediaPipe): 21 puntos por mano, en coordenadas de imagen y en **coordenadas 3D de mundo** (metros), y 468 puntos por rostro.
+2. **Geometría vectorial 3D**: ángulos articulares por producto punto, normal de la palma por producto cruz, un marco de referencia propio de cada mano y la pose de la cabeza con `cv2.solvePnP`.
+3. **Clasificadores geométricos basados en reglas**, diseñados por el equipo y **calibrados con grabaciones reales** de ambas manos.
+4. **Filtrado temporal**: filtro antivibración One-Euro por mano, estabilizador de etiquetas y análisis de trayectorias en ventanas de tiempo.
 
 | Ventaja del enfoque | Explicación |
 |---|---|
 | **Explicable** | Cada decisión se justifica con una regla geométrica concreta |
 | **Sin dataset previo** | No requiere recolectar ni etiquetar miles de imágenes |
-| **Tiempo real** | ≈ 28 FPS en una laptop sin GPU |
-| **Invariante** | No depende de la distancia a la cámara, de la posición ni de si se usa la mano izquierda o la derecha |
+| **Tiempo real** | 25-26 FPS de captura con la laptop conectada; 11-17 FPS en batería con dos manos (sección 8.9) |
+| **Invariante** | No depende de la distancia a la cámara, de la posición, de la rotación de la mano ni de si se usa la izquierda o la derecha |
 
 ### 1.4 Alfabeto de referencia
 
@@ -76,48 +78,52 @@ Las señas se definieron a partir de la **lámina oficial "Abecedario en Lengua 
 ## 2. Arquitectura del sistema (enfoque multimodal)
 
 ```
-                            ┌────────────────────────┐
-                            │      Cámara web        │
-                            └───────────┬────────────┘
-                                        │ frame BGR (≈ 28 FPS)
-                            ┌───────────▼────────────┐
-                            │ Espejo · BGR → RGB     │
-                            └─────┬────────────┬─────┘
-                                  │            │
-       ┌──────────────────────────▼───┐   ┌────▼───────────────────────────┐
-       │ MANOS (MediaPipe Hands)      │   │ ROSTRO (MediaPipe Face Mesh)   │
-       │ 21 landmarks                 │   │ 468 landmarks                  │
-       ├──────────────────────────────┤   ├────────────────────────────────┤
-       │ analizar_mano  → rasgos      │   │ calcular_rasgos_faciales       │
-       │ clasificar_pose → letra/pose │   │ AnalizadorFacial               │
-       │ Trayectoria (deque, 45 fr.)  │   │  · cejas (línea base personal) │
-       │ ReconocedorDinamico          │   │  · negar · asentir             │
-       └───────────────┬──────────────┘   └───────────────┬────────────────┘
-          letra estable│trazo reconocido                  │ ?  ·  borrar  ·  confirmar
-                       └─────────────────┬────────────────┘
-                              ┌──────────▼───────────┐
-                              │ Escritor             │  texto + eventos
-                              │ hold-to-type 1.5 s   │
-                              └─────┬─────────┬──────┘
-              ┌─────────────────────┤         ├─────────────────────┐
-     ┌────────▼────────┐   ┌────────▼────────┐   ┌────────▼────────────────┐
-     │ Ventana de      │   │ Panel           │   │ Hilo de voz (pyttsx3)   │
-     │ cámara          │   │ traductor       │   │ + enviar_a_hardware()   │
-     └─────────────────┘   └─────────────────┘   └─────────────────────────┘
+                              ┌────────────────────────┐
+                              │       Cámara web       │
+                              └───────────┬────────────┘
+                                          │ frame BGR
+                              ┌───────────▼────────────┐
+                              │ Espejo · BGR → RGB     │
+                              └──────┬───────────┬─────┘
+                                     │           │
+   ┌─────────────────────────────────▼──┐   ┌────▼───────────────────────────────┐
+   │ MANOS (MediaPipe Hands, 2 manos)   │   │ ROSTRO (MediaPipe Face Mesh)       │
+   │ imagen + mundo 3D + lateralidad    │   │ 468 puntos                         │
+   ├────────────────────────────────────┤   ├────────────────────────────────────┤
+   │ SeguidorManos → ranura Izq / Der   │   │ EstimadorPoseCabeza (solvePnP)     │
+   │ ┌──────────────┐ ┌──────────────┐  │   │  pitch · yaw · roll · error        │
+   │ │ CanalMano Izq│ │ CanalMano Der│  │   │ calcular_rasgos_faciales           │
+   │ │ One-Euro     │ │ One-Euro     │  │   │  cejas compensadas por la pose     │
+   │ │ espejo → 3D  │ │ 3D           │  │   │ AnalizadorFacial                   │
+   │ │ clasificar   │ │ clasificar   │  │   │  · pregunta · negar · asentir      │
+   │ │ Estabilizador│ │ Estabilizador│  │   │  · cara neutra (tecla N)           │
+   │ │ Trayectoria  │ │ Trayectoria  │  │   └───────────────┬────────────────────┘
+   │ │ Reconocedor  │ │ Reconocedor  │  │                   │ ?  ·  borrar  ·  confirmar
+   │ └──────┬───────┘ └──────┬───────┘  │                   │
+   └────────┼────────────────┼──────────┘                   │
+            └──────────┬─────┘                              │
+                ┌──────▼────────────────────────────────────▼──┐
+                │ Escritor: hold-to-type 1.5 s POR MANO, texto  │   (Traductor.paso orquesta todo:
+                └──────┬───────────────┬───────────────┬────────┘    el mismo código en vivo y en pruebas)
+          ┌────────────▼───┐   ┌───────▼────────┐   ┌──▼──────────────────────┐
+          │ Ventana cámara │   │ Panel          │   │ Hilo de voz (pyttsx3)   │
+          │ Izq: B | Der: O│   │ traductor      │   │ + enviar_a_hardware()   │
+          └────────────────┘   └────────────────┘   └─────────────────────────┘
 ```
 
 ---
 
-### 2.1 Módulo de manos: alfabeto estático (MediaPipe Hands)
+### 2.1 Módulo de manos: dos manos y geometría 3D (MediaPipe Hands)
 
 #### 2.1.1 Detección
 
 | Parámetro | Valor | Justificación |
 |---|---|---|
 | `static_image_mode` | `False` | Seguimiento temporal: más rápido y estable |
-| `max_num_hands` | `1` | Las señas son de una mano |
+| `max_num_hands` | `2` (`MAX_MANOS`) | Cualquiera de las dos manos escribe, o ambas a la vez. Costo medido: con una sola mano a la vista, MediaPipe busca la segunda en cada frame y el tiempo de las manos se duplica (37 → 76 ms en batería) |
 | `min_detection_confidence` | `0.7` | Reduce detecciones falsas |
 | `min_tracking_confidence` | `0.6` | Mantiene el seguimiento con movimiento |
+| Salidas que se usan | `multi_hand_landmarks`, `multi_hand_world_landmarks`, `multi_handedness` | Imagen (x, y, z), mundo 3D en metros y etiqueta Left/Right con su confianza |
 
 ```
           8    12   16   20      ← TIP  (puntas)
@@ -130,115 +136,150 @@ Las señas se definieron a partir de la **lámina oficial "Abecedario en Lengua 
             0                    ← WRIST (muñeca)
 ```
 
-#### 2.1.2 Normalización espacial
+#### 2.1.2 Lateralidad y estado independiente por mano
 
-| Paso | Operación | Objetivo |
-|---|---|---|
-| 1. Desnormalización | `(x·ancho, y·alto)` | MediaPipe da coordenadas en [0, 1]; sin esto, una misma distancia mediría distinto en horizontal y en vertical |
-| 2. Escala | `escala = max(‖P₀ − P₉‖, 1.55 · ‖P₅ − P₁₇‖)` | Todas las medidas se expresan en "manos". Usa solo puntos rígidos de la palma, así que no cambia con la seña, y el máximo la hace robusta a la rotación |
-| 3. Marco de la mano | eje `P₅ → P₁₇` y eje de la palma `P₀ → P₉` | El pulgar y la orientación se miden respecto a la propia mano, por eso funciona igual con la mano izquierda o la derecha |
+La imagen se espeja **antes** de procesarla, así que la etiqueta de `multi_handedness` corresponde a la mano real de la persona. Con datos reales la etiqueta fue muy confiable (0.94-1.00), pero se observaron tres problemas que resuelve `SeguidorManos`:
 
-> **¿Por qué no normalizar por el *bounding box*?** Porque la caja cambia con la propia seña: un puño tiene una caja mucho menor que una mano abierta, y los umbrales dependerían de la letra que se quiere reconocer.
+| Problema observado en las grabaciones | Regla |
+|---|---|
+| MediaPipe devolvió **la misma mano dos veces** (mismo lugar, misma etiqueta) | Dos detecciones a menos de 0.35 tamaños de mano son la misma: se queda la más confiable |
+| La etiqueta **parpadeó** unos frames en letras como C o F | **Continuidad:** una mano que aparece donde estaba una ranura activa (< 1.2 tamaños de mano, < 0.25 s) sigue en esa ranura aunque la etiqueta parpadee |
+| El orden de las manos en la lista de MediaPipe cambia entre frames | Se asignan por posición, no por orden |
+| Una mano quedó en la ranura equivocada | Se acumula la evidencia (EMA) de la etiqueta; si la otra lateralidad se sostiene (> 0.85), se corrige |
 
-#### 2.1.3 Rasgos que se calculan (`RasgosMano`)
+Cada ranura tiene su propio `CanalMano`: **filtro One-Euro, estabilizador, buffer de trayectoria, reconocedor de trazos y barra de progreso**. Por eso las trayectorias de las dos manos nunca se cruzan, aunque ambas estén en escena o se crucen físicamente.
+
+#### 2.1.3 Normalización de simetría (espejo)
+
+Antes de clasificar, **la mano izquierda se refleja en el eje lateral** (`x → −x`) en sus coordenadas de imagen y de mundo (`a_canonica`). Así todas las reglas se escriben una sola vez, para una mano derecha canónica, y valen igual para la izquierda. Sin el espejo, la normal de la palma de una mano izquierda apuntaría al revés y las reglas de orientación se invertirían.
+
+En los trazos esto significa que **la mano izquierda hace los movimientos en espejo**: por ejemplo BORRAR es un barrido hacia el centro del cuerpo (a la izquierda con la mano derecha y a la derecha con la izquierda). La J, la Z y el `?` aceptan además el trazo sin reflejar, porque se pueden dibujar como letra escrita.
+
+#### 2.1.4 Filtro antivibración One-Euro
+
+`FiltroOneEuro` (Casiez, Roussel y Vogel, 2012) suaviza los 21 puntos de cada mano (imagen y mundo) con un promedio exponencial cuya frecuencia de corte **sube con la velocidad**:
+
+```
+α(f_c) = 1 / (1 + 1 / (2π · f_c · Δt))
+dx̂ ← dx̂ + α(f_d) · ((x − x̂)/Δt − dx̂)                     velocidad filtrada
+f_c = f_min + β · |dx̂| / tamaño_de_mano                     corte adaptativo
+x̂ ← x̂ + α(f_c) · (x − x̂)
+```
+
+Con la mano quieta corta bajo (f_min = 1.5 Hz) y quita el temblor; al hacer un trazo el corte sube (β = 0.4) y casi no mete retraso. La velocidad se mide en tamaños de mano por segundo, así que no depende de la distancia. Con datos reales mejoró la escritura de extremo a extremo y eliminó trazos falsos causados por el temblor (sección 8.7).
+
+#### 2.1.5 Rasgos 3D (`RasgosMano`)
+
+Todo se calcula sobre la mano canónica en un **marco propio de la mano**: `u` (muñeca → nudillo del medio), `s` (nudillo del índice → nudillo del meñique, ortogonalizado) y la **normal de la palma** `n = s × u`. Las medidas se dividen entre el largo de la palma, así que son adimensionales.
 
 | Rasgo | Cómo se mide | Para qué sirve |
 |---|---|---|
-| **Estado de cada dedo** (`EXT` / `DOB` / `CER`) | razón `r = ‖punta−muñeca‖ / ‖nudillo−muñeca‖` y ángulo en la articulación media | Base de casi todas las letras |
-| **Pulgar abierto** | `‖punta pulgar − nudillo índice‖ / escala ≥ 0.48` y `t < 0` | A, L, G, Y, P. Se mide por **distancia** y no por rectitud, porque el pulgar parpadea entre "recto" y "doblado" |
-| **Posición del pulgar `t`** | proyección de la punta sobre el eje índice → meñique | Cruza la palma (E) o queda por fuera (C) |
-| **Orientación de la mano** | ángulo del eje de la palma respecto a "arriba": 0° arriba · 90° de lado · 180° abajo | G y H (de lado), M y N (hacia abajo) |
-| **Dirección del índice** | ángulo nudillo → punta del índice respecto a "arriba" | Separa Q (cuelga) de X (de lado) |
-| **Cruce de índice y medio** | separación **con signo** de las puntas a lo largo del eje de los nudillos | R (entrelazados), P (en "X") |
-| **Apertura entre dedos** | ángulo entre vectores nudillo → punta | U, V, B, ESPACIO |
-| **Contacto del pulgar** | distancia punta del pulgar ↔ punta de cada dedo | O, F, C |
+| **Extensión de cada dedo** | ‖punta − muñeca‖ / ‖nudillo − muñeca‖ en 3D | Recto (1.45-2.1), curvo (1.0-1.5) o cerrado (0.6-1.15) |
+| **Flexión articular** | ángulos en MCP, PIP y DIP por **producto punto** de los vectores MCP→PIP→DIP→TIP | Distingue un dedo largo pero doblado; la E dobla PIP/DIP con el MCP recto |
+| **Estado del dedo** (`EXT` / `DOB` / `CER`) | recto si está estirado (extensión) **y** sus articulaciones casi no se doblan (PIP+DIP ≤ 75°), o si las articulaciones están rectas (≤ 55°) aunque se vea hasta 0.15 más corto; el meñique, con PIP+DIP ≤ 50° aunque el nudillo lo incline | Base de casi todas las letras. Con los ángulos se separa la N (índice a 1.39 pero 51° de flexión: recto) de la E (índice a 1.39 con 95°: doblado) |
+| **Normal de la palma** | producto cruz `s × u` (cámara: z < 0 = palma hacia la cámara) | P (palma girada), orientación |
+| **Orientación** | ángulo 3D del eje `u` respecto a "arriba": 0° arriba · 90° de lado · 180° abajo | G y H (de lado), M y N (abajo), Q (colgando) |
+| **Dirección del índice** | ángulo 3D nudillo → punta del índice | D (arriba) contra X (de lado) y Q (abajo) |
+| **Pulgar respecto a las falanges** | punta del pulgar contra el nudillo del índice (eje lateral) y contra los PIP de índice y medio (eje de la mano) | A (por fuera), T (asoma entre índice y medio), S (cruzado por debajo) |
+| **Cruce índice-medio** | (punta del medio − punta del índice) en el eje lateral, con signo | R (orden invertido), V (separadas) |
+| **Ángulo 3D índice-medio** y **profundidad del medio** | ángulo entre ambos dedos y cuánto se adelanta el medio hacia el lado de la palma | U (paralelos) contra P (el medio cruza por delante) |
+| **Contacto del pulgar** | distancia punta del pulgar ↔ punta del índice **en la imagen** (más precisa en x-y) | O, F, C, Y, ESPACIO |
 
-#### 2.1.4 Clasificador (`clasificar_pose`)
+#### 2.1.6 Clasificador (`clasificar_pose`)
 
-Se decide en este orden: **cuántos dedos están estirados → orientación → detalles del pulgar**. Si ninguna regla coincide devuelve `None`: el sistema prefiere no responder antes que equivocarse.
+Orden de decisión: **pinzas y manos curvas (F, O, C) → número de dedos rectos → orientación → pulgar y relación índice-medio**. Si ninguna regla coincide devuelve `None`: el sistema prefiere no responder antes que equivocarse.
 
 | Seña | Cómo se hace (lámina SEP) | Regla implementada |
 |---|---|---|
-| **A** | Puño con el pulgar estirado al lado | 4 dedos cerrados + pulgar abierto |
-| **B** | 4 dedos juntos arriba, pulgar sobre la palma | 4 estirados, apertura índice-meñique < 20°, pulgar no abierto |
-| **C** | Mano curva en forma de C | ≥ 2 dedos doblados, pulgar por fuera (`t < 0.10`), hueco pulgar-índice entre 0.20 y 1.30 |
-| **D** | Índice arriba, los demás cerrados | solo el índice estirado, pulgar no abierto, mano hacia arriba |
-| **E** | Dedos doblados sobre el pulgar | ≥ 2 doblados, pulgar cruzado (`t ≥ 0.20`) |
-| **F** | Índice toca el pulgar, 3 dedos arriba | medio, anular y meñique estirados, contacto pulgar-índice < 0.35 |
-| **G** | "Pistola": índice de lado, pulgar arriba | índice estirado, pulgar abierto a 50°-130°, mano de lado |
-| **H** | "Pistola" con dos dedos | índice y medio estirados, mano de lado |
-| **I** | Solo el meñique arriba | meñique estirado, pulgar no abierto |
-| **L** | Índice arriba y pulgar al lado | índice estirado, pulgar abierto a 50°-130°, mano arriba |
-| **M** | 3 dedos hacia abajo | índice, medio y anular estirados, mano hacia abajo |
-| **N** | 2 dedos hacia abajo | índice y medio estirados, mano hacia abajo |
-| **O** | Círculo índice-pulgar | ningún dedo estirado, contacto pulgar-índice < 0.20 |
-| **P** | Índice y medio cruzados en "X" | índice y medio arriba con separación de puntas ≤ −0.18, **o** con el pulgar abierto |
-| **R** | Índice y medio entrelazados | índice y medio arriba con las puntas **cruzadas** (separación < 0) |
-| **S** | Puño, pulgar sobre los dedos | 4 cerrados, pulgar a menos de 0.20 del nudillo del índice |
-| **T** | Puño, pulgar entre los dedos | 4 cerrados, pulgar a 0.20 o más del nudillo del índice |
-| **U** | Índice y medio juntos | índice y medio arriba, ángulo < 14° |
-| **V** | Índice y medio en V | índice y medio arriba, ángulo ≥ 25° |
-| **W** | Índice, medio y anular abiertos | 3 estirados, mano arriba |
-| **Y** | Pulgar y meñique estirados | meñique estirado y pulgar abierto |
-| **ESPACIO** | Mano abierta, 5 dedos separados | 4 estirados, pulgar recto y lejos (> 0.65), apertura ≥ 48° |
+| **A** | Puño con el pulgar estirado al lado | ningún dedo recto, pulgar por fuera del nudillo del índice (< −0.45) |
+| **B** | 4 dedos juntos arriba, pulgar sobre la palma | 4 rectos, pulgar sobre la palma (> 0), apertura índice-meñique < 20° |
+| **C** | Mano curva en forma de C | índice y medio curvos (flexión PIP+DIP 60-115°), pulgar por fuera, hueco pulgar-índice 0.32-1.10 (más cerca es la O), índice no metido en la palma (≥ 1.05) |
+| **D** | Índice arriba, los demás cerrados | solo el índice recto, pulgar adentro, sin la inclinación de la X |
+| **E** | Dedos doblados sobre el pulgar | ningún dedo recto, pulgar por debajo de los PIP, nudillos (MCP) casi rectos (< 33°) |
+| **F** | Índice toca el pulgar, 3 dedos arriba | anular y meñique rectos, medio no cerrado, pinza < 0.55 (o < 0.75 si el índice está claramente doblado) |
+| **G** | "Pistola": índice de lado, pulgar arriba | índice recto (o largo aunque algo doblado, ≥ 1.40), pulgar afuera, mano de lado |
+| **H** | "Pistola" con dos dedos | índice y medio rectos, mano de lado |
+| **I** | Solo el meñique arriba | meñique recto, índice y medio sin estirar, pulgar cerca del índice (< 0.75) |
+| **L** | Índice arriba y pulgar al lado | índice recto, pulgar afuera, mano arriba |
+| **M** | 3 dedos hacia abajo | índice, medio y anular rectos, mano hacia abajo |
+| **N** | 2 dedos hacia abajo | índice y medio rectos, mano hacia abajo |
+| **O** | Círculo índice-pulgar | índice y medio curvos, pulgar por fuera, puntas juntas (< 0.32) |
+| **P** | Índice y medio cruzados en "X" | índice y medio arriba sin cruce de puntas, pero con ángulo ≥ 11°, el medio adelantado o la palma girada |
+| **R** | Índice y medio entrelazados | índice y medio arriba con las puntas **cruzadas** (cruce ≤ −0.05) |
+| **S** | Puño, pulgar sobre los dedos | ningún dedo recto, pulgar cruzado por debajo de los PIP |
+| **T** | Puño, pulgar entre los dedos | ningún dedo recto, punta del pulgar **por encima** de los PIP de índice y medio (> 0) |
+| **U** | Índice y medio juntos | paralelos (< 11°), en el mismo plano y con la palma de frente |
+| **V** | Índice y medio en V | puntas separadas en el eje lateral (≥ 0.40) |
+| **W** | Índice, medio y anular abiertos | 3 rectos, mano arriba |
+| **Y** | Pulgar y meñique estirados | meñique recto, índice y medio sin estirar, pulgar lejos del índice (≥ 0.75) |
+| **ESPACIO** | Mano abierta, 5 dedos separados | 4 rectos, pulgar lejos del índice (≥ 1.00) y por fuera |
+| (mano abierta sin seña) | Mano relajada | 4 rectos sin cumplir B ni ESPACIO: no escribe, pero sirve para barrer (BORRAR) |
 
-> **La zona intermedia entre B (< 20°) y ESPACIO (≥ 48°) es la "mano relajada" y no escribe nada.** Se midió que una mano abierta y relajada queda en ≈ 40°; con el umbral original (35°) caía en B y habría escrito letras sin querer.
+Las configuraciones de **Q** (puño o pinza con la mano colgando: orientación ≥ 80° e índice ≥ 105°) y **X** (índice recto o a medio estirar de lado con la palma inclinada) solo escriben con su movimiento.
 
 ```
-                         ¿Cuántos dedos estirados?
-     ┌───────┬───────────┬──────────┬──────────┬───────────────┐
-     4       3           2          1                          0
-     │       │           │          │                          │
-  F / M /  F · W · M   ¿orientación? ¿cuál?             O · A · S · T
-  ESPACIO / B          abajo → N    índice: L/G/D/(Q/X)  · E · C
-  / ABIERTA            lado  → H    meñique: I/Y
-                       arriba: P · R · V · U
+                 ¿Pinza con anular y meñique rectos? ── sí ──▶ F
+                 ¿Índice y medio curvos y pulgar fuera? ─ sí ─▶ O (se tocan) · C (hueco)
+                              ¿Cuántos dedos rectos?
+     ┌──────────┬──────────┬──────────────────┬─────────────────┬────────────────┐
+     4          3          2 (índice-medio)   1                 0
+  M (abajo)   M · W     N (abajo) · H (lado)  índice: L·G·Q·X·D  Q (colgando) · X
+  ESPACIO              V (separadas)           meñique: I · Y     pulgar fuera: L · G (índice
+  B · abierta          R (cruzadas) · U · P                        largo) o A (índice metido)
+                                                                   T (pulgar arriba)
+                                                                   E (MCP rectos) · S
 ```
 
 ---
 
-### 2.2 Señas con movimiento (buffer de trayectoria)
+### 2.2 Señas con movimiento (buffer de trayectoria por mano)
 
-Ocho gestos necesitan **movimiento** y no se pueden reconocer con un solo fotograma: seis letras (J, K, Ñ, Q, X, Z) y dos señas de control (BORRAR y el `?` dibujado en el aire).
+Ocho gestos necesitan **movimiento**: seis letras (J, K, Ñ, Q, X, Z) y dos señas de control (BORRAR y el `?` dibujado en el aire). Cada mano tiene su propio buffer y su propio reconocedor.
 
 #### 2.2.1 Buffer
 
-`Trayectoria` guarda en una `collections.deque` de **45 fotogramas** (≈ 1.5 s) las posiciones de la muñeca, el centro de la palma, las puntas de los dedos y la configuración vista en cada frame. Todas las posiciones se **normalizan por el tamaño de la mano**, así que el trazo no depende de la distancia a la cámara.
+`Trayectoria` guarda en una `collections.deque` (hasta 64 muestras) la posición de la muñeca, el centro de la palma y las puntas de los dedos **en la mano canónica** (la izquierda reflejada), normalizadas por el tamaño de la mano, junto con la configuración vista en cada frame. Guarda también las posiciones reales para dibujar la estela.
 
-> **Se usan 45 fotogramas y no los 15-20 que se habían propuesto.** Con grabaciones reales, una Z dibujada a ritmo natural dura **1.4-2 s**; en 20 fotogramas (0.7 s) no cabe un trazo de tres movimientos. Cada gesto mira solo la parte del buffer que necesita (columna "Ventana").
+> **Las ventanas se miden en segundos, no en fotogramas.** Con 45 fotogramas, a 25 FPS una ventana dura 1.8 s y a 16 FPS 2.8 s. En la sesión de prueba (grabada a ~17 FPS) eso cambiaba los resultados; con ventanas en segundos el reconocimiento es el mismo en una computadora rápida o lenta. Una Z a ritmo natural dura 1.4-2 s; un vaivén, ~1 s; el barrido de BORRAR, ~0.5 s.
 
 #### 2.2.2 Reconocedores
 
-Cada gesto exige **una configuración de mano** durante al menos el 60 % de su ventana (45 % para Q y X) y **un patrón de movimiento**. Todos aceptan el trazo en espejo (zurdos, o quien dibuja "como en el espejo") salvo BORRAR.
+Cada gesto exige que **su configuración domine su ventana** (≥ 60 % de las muestras) y **un patrón de movimiento**. No basta con el último fotograma: al moverse rápido la mano a veces se lee como otra letra (por ejemplo la D se ve como X al dibujar una Z). Si varios trazos coinciden, gana el de configuración más dominante.
 
 | Gesto | Configuración | Punto rastreado | Ventana | Patrón |
 |---|---|---|---|---|
-| **J** | I o Y (el pulgar parpadea) | punta del meñique | 30 | baja ≥ 0.55 manos y se curva ≥ 0.25 hacia un lado (gancho) |
-| **Z** | D | punta del índice | 45 | 3 trazos: barra →, diagonal ↙ (rumbo 225° ± 35°), barra →; barras ≥ 0.40, diagonal ≥ 0.45 |
-| **?** | D | punta del índice | 45 | arco que abulta a un lado, regresa al centro y termina en un tallo vertical hacia abajo; altura ≥ 0.80 |
-| **K** | P, R o U | punto medio de las puntas índice-medio | 45 | **vaivén** lateral: ≥ 2 cambios de sentido de ≥ 0.15 manos |
-| **Ñ** | N (o H si la N queda de lado) | centro de la palma | 30 | vaivén lateral: ≥ 2 cambios de sentido de ≥ 0.10 manos |
-| **Q** | índice curvo, resto cerrado, **índice hacia abajo** (≥ 120°) | punta del índice | 24 | vaivén de ≥ 0.07 manos |
-| **X** | índice curvo, resto cerrado, **índice de lado o arriba** (< 120°) | punta del índice | 24 | el mismo vaivén |
-| **BORRAR** | mano abierta (B, ESPACIO o abierta) | centro de la palma | 15 | barrido **a la izquierda** ≥ 1.10 manos, ≥ 3.0 manos/s, ≥ 85 % monótono |
+| **J** | I o Y (el pulgar parpadea) | punta del meñique | 1.2 s | baja ≥ 0.55 manos y se curva ≥ 0.25 hacia un lado (gancho) |
+| **Z** | D | punta del índice | 1.8 s | 3 trazos: barra →, diagonal ↙ (225° ± 35°), barra →; barras ≥ 0.40, diagonal ≥ 0.45 |
+| **?** | D | punta del índice | 1.8 s | arco que abulta a un lado, regresa al centro y termina en un tallo vertical; altura ≥ 0.80 |
+| **K** | P, R o U | punto medio de las puntas índice-medio | 1.8 s | **vaivén** lateral: ≥ 2 cambios de sentido de ≥ 0.15 manos |
+| **Ñ** | N (o H si la N queda de lado) | centro de la palma | 1.2 s | vaivén lateral: ≥ 2 cambios de sentido de ≥ 0.07 manos |
+| **Q / X** | Q o X | punta del índice | 1.0 s | vaivén de ≥ 0.07 manos; Q si el índice cuelga en promedio (≥ 105°), X si no |
+| **BORRAR** | mano abierta (B, ESPACIO o abierta) | centro de la palma | 0.6 s | barrido hacia el centro del cuerpo ≥ 1.10 manos, ≥ 3.0 manos/s (medido en tramos de 0.15 s), ≥ 85 % monótono |
 
-**Técnicas usadas:** simplificación de trazos con **Ramer-Douglas-Peucker** y análisis por segmentos (rumbo y largo) para la Z; conteo de cambios de sentido con histéresis para los vaivenes; velocidad pico en ventanas de 4 muestras para BORRAR.
+**Técnicas usadas:** simplificación de trazos con **Ramer-Douglas-Peucker** y análisis por segmentos (rumbo y largo) para la Z; detección de **puntos de giro** con histéresis para los vaivenes; velocidad pico para BORRAR.
 
-#### 2.2.3 Reglas que evitan errores
+#### 2.2.3 Movimiento coherente (vaivenes)
+
+Para que acomodar la mano no cuente como K, Ñ, Q o X, las **últimas dos idas y vueltas completas** (entre puntos de giro) deben ser:
+
+| Condición | Valor | Medido con datos reales |
+|---|---|---|
+| **Directas**: desplazamiento lateral / camino recorrido | ≥ 0.5 | K y Ñ reales: 0.6-0.99; la K falsa al dibujar una Z: 0.34 |
+| **De tamaño parecido**: la mayor / la menor | ≤ 2.5 | K reales: 1.0-1.4; esa K falsa: 3.8 |
+
+#### 2.2.4 Reglas que evitan errores
 
 | Regla | Qué evita |
 |---|---|
-| Una letra **estática** solo avanza si la palma se mueve a menos de 1.2 manos/s | que moverse mientras se forma la seña escriba letras |
-| Tras un trazo, la configuración base queda **bloqueada** hasta que la mano cambie o baje (p. ej. la I tras dibujar una J) | que la I se escriba 1.5 s después de la J |
+| Una letra **estática** solo avanza si **esa mano** se mueve a menos de 1.2 manos/s | que moverse mientras se forma la seña escriba letras |
+| Tras un trazo, la configuración base de esa mano queda **bloqueada** hasta que cambie o baje (p. ej. la I tras dibujar una J) | que la I se escriba 1.5 s después de la J |
 | Tras un vaivén hace falta una **pausa** de 0.3 s con la palma casi quieta | que agitar seguido escriba `Q Q Q` |
-| Enfriamiento de 1.0 s entre trazos | duplicados |
-| El buffer se vacía si la mano desaparece más de 5 fotogramas | trazos que mezclan dos intentos |
-
-> **BORRAR cambió de puño a barrido.** Con el alfabeto completo, un puño con el pulgar adentro es la **S**, la **T** o la **A**; borrar con un puño habría borrado letras al escribirlas. Quedan además `Backspace` y negar con la cabeza.
+| Enfriamiento de 1.0 s entre trazos de la misma mano | duplicados |
+| El buffer se vacía si la mano desaparece más de 5 fotogramas, o si otra mano ocupa la ranura | trazos que mezclan dos intentos o dos manos |
 
 ---
 
-### 2.3 Módulo facial (componentes no manuales)
+### 2.3 Módulo facial: pose 3D de la cabeza y cejas
 
 #### 2.3.1 Fundamento lingüístico
 
@@ -249,60 +290,70 @@ Cada gesto exige **una configuración de mano** durante al menos el 60 % de su v
 | Asentir con la cabeza | Afirmación | Confirma la palabra, agrega un espacio y la lee en voz alta |
 | Cejas fruncidas | Pregunta abierta (qué, dónde, quién…) | Planeado |
 
-> **¿Existe una seña manual de "pregunta" en la LSM?** No se encontró ninguna fuente que describa un gesto manual con el dedo índice. Lo documentado es la marca facial (cejas levantadas para preguntas cerradas, fruncidas para abiertas). El **"?" dibujado en el aire con el índice** es por tanto un **respaldo propio del sistema**, no una seña oficial de la LSM.
+> **¿Existe una seña manual de "pregunta" en la LSM?** No se encontró ninguna fuente que describa un gesto manual con el dedo índice. Lo documentado es la marca facial. El **"?" dibujado en el aire con el índice** es un **respaldo propio del sistema**, no una seña oficial de la LSM.
 
-#### 2.3.2 Métrica de las cejas (`calcular_rasgos_faciales`)
+#### 2.3.2 Pose real de la cabeza con `cv2.solvePnP`
 
-Se usan **5 puntos del contorno superior de cada ceja** (Face Mesh 70·63·105·66·107 y 300·293·334·296·336), las **comisuras de los ojos** (33·133 y 362·263) como referencia ósea y el **eje de la cara** (mentón 152 → frente 10):
-
-```
-u = (P₁₀ − P₁₅₂) / H          H = ‖P₁₀ − P₁₅₂‖  (alto total del rostro)
-
-E_lado = promedio sobre los 5 puntos de ceja de  (P_ceja − Ō_ojo) · u
-E      = ½ (E_der + E_izq) / H            Ō_ojo = punto medio de las comisuras
-```
-
-- **Se proyecta sobre el eje de la cara:** no importa si se inclina o gira la cabeza.
-- **Se divide entre el alto del rostro:** no importa la distancia a la cámara.
-- **Se usa la comisura y no el párpado:** el párpado baja al parpadear o mirar abajo y parecería una ceja levantada.
-- **Línea base personal:** percentil 35 de 45 fotogramas con la cara neutra (ignora fotogramas con las cejas ya levantadas); se reajusta despacio mientras la cara está neutra; la tecla `R` recalibra.
-
-#### 2.3.3 Por qué fallaba la versión anterior (diagnóstico con datos reales)
-
-Se grabó una sesión guiada (cara neutra, cejas arriba dos veces, mirar abajo, parpadear, girar, negar, asentir). Razón respecto a la línea base (mediana):
-
-| Métrica | Subida de ceja | Mirar abajo | Parpadeo | Giro | Negar | Asentir | Ruido en reposo |
-|---|---|---|---|---|---|---|---|
-| **Anterior** (distancia euclidiana / distancia entre ojos) | 1.12 | — | — | 1.01 (p95 **1.19**) | p95 **1.20** | — | 1.6 % |
-| **Párpado** (proyectada / alto de rostro) | 1.14 (p95 1.25-1.29) | p95 1.14 | 1.08 (p95 **1.19**) | — | — | — | **4.0 %** |
-| **Actual** (comisura, proyectada, / alto de rostro) | **1.10-1.12** | 0.99 (p95 1.03) | 1.01 (p95 1.06) | 0.98 (p95 1.01) | 0.99 (p95 1.03) | 0.99 (p95 1.07) | **1.5 %** |
-
-**Causa del fallo:** una subida real de ceja da solo **+10 a +17 %** en esa métrica, y el umbral era **1.15**: solo el 29-37 % de los fotogramas lo superaba y nunca se sostenía 1.5 s seguidos. Además, la métrica anterior se dejaba engañar por el giro de la cabeza (hasta +19 %).
-
-Con el umbral nuevo (**1.07**, salida **1.04**), la racha continua más larga por encima del umbral fue de **2.1-2.2 s** en las dos subidas (que en total duraron unos 3.6 s) y de **≤ 0.2 s** en todas las demás fases: no hay falsos positivos.
-
-#### 2.3.4 Detección de la pregunta
+`EstimadorPoseCabeza` empareja **15 puntos rígidos** de Face Mesh (nariz, comisuras de los ojos, frente, mentón y pómulos; **sin cejas ni boca**, que se mueven con la expresión) con su posición en el **modelo canónico de la cara de MediaPipe** (`canonical_face_model.obj`, en cm, convertido a los ejes de la cámara de OpenCV) y resuelve la rotación:
 
 ```
-razón = E / E_base
-   razón ≥ 1.07                 → empieza a contar (cejas arriba)
-   1.04 ≤ razón < 1.07          → histéresis: sigue contando
-   razón < 1.04 por más de 0.30 s → se reinicia (un parpadeo no cuenta)
-   1.5 s seguidos arriba        → "?"  (solo una por cada vez que se levantan las cejas)
+K = [[ancho, 0, ancho/2], [0, ancho, alto/2], [0, 0, 1]]     cámara aproximada (foco = ancho)
+solvePnP(modelo_3D, puntos_2D, K)  →  R (Rodrigues), t
+frente = −R·ẑ      pitch = asin(frente_y)            (+ = mira abajo)   → asentir
+                   yaw   = atan2(frente_x, −frente_z)                    → negar
+arriba = −R·ŷ      roll  = atan2(arriba_x, −arriba_y)                    → inclinación
 ```
 
-Después de negar o asentir, las cejas se ignoran 0.8 s (esos movimientos no deben contar como pregunta). Un **medidor siempre visible** en la ventana de cámara muestra la razón en vivo y la marca del umbral.
+La primera vez usa EPnP y después parte de la pose anterior (más estable). Con datos reales el **error de reproyección** fue de 1.6 px de mediana y la distancia estimada a la cámara (~55-90 cm) es coherente con una laptop. Los ángulos se muestran en vivo bajo el medidor de cejas.
 
-#### 2.3.5 Movimientos de cabeza (`DetectorOscilacion`)
+#### 2.3.3 Cejas compensadas por la pose
 
-Negar y asentir son **patrones temporales**. Una media móvil exponencial (τ = 2.5 s) sigue la postura neutra de la cabeza, así que mirar a un lado y quedarse ahí no cuenta. Se cuentan las **entradas** a zonas con histéresis dentro de una ventana de 1.4 s:
+La medida base es la de la versión anterior: altura media de las cejas (5 puntos del contorno superior de cada una) sobre la línea de las **comisuras de los ojos**, proyectada sobre el eje de la cara (mentón → frente) y dividida entre el alto del rostro. Al inclinar o girar la cabeza esa medida 2D cambia por escorzo, aunque las cejas no se muevan. Para compensarlo se **proyecta el modelo canónico con la misma pose** que dio `solvePnP`:
 
-| Gesto | Señal | Amplitud | Condición |
-|---|---|---|---|
-| Negación | giro (yaw) de la nariz entre los pómulos | 0.08 | ≥ 3 entradas **en ambos lados** |
-| Afirmación | inclinación (pitch) de la nariz | 0.035 | ≥ 2 entradas |
+```
+cejas = medida_2D / ( medida del modelo canónico con esta pose / medida del modelo de frente )
+```
 
-Tras un gesto de cabeza hay un enfriamiento de 1.2 s.
+Lo que cambia solo por mover la cabeza se cancela, y lo que queda es el movimiento real de las cejas.
+
+#### 2.3.4 Calibración de la cara neutra (tecla `N`)
+
+Durante los primeros 45 fotogramas con rostro se guarda la **línea base personal**: cejas (percentil 35, que ignora fotogramas con las cejas ya levantadas), apertura de los ojos (mediana) y pose neutra de la cabeza. La tecla **`N`** la repite en cualquier momento (`R` sigue funcionando).
+
+#### 2.3.5 Detección de la pregunta
+
+```
+razón = cejas / cejas_base
+   razón ≥ 1.07                    → empieza a contar (cejas arriba)
+   1.04 ≤ razón < 1.07             → histéresis: sigue contando
+   razón < 1.04 por más de 0.30 s  → se reinicia (un parpadeo no cuenta)
+   1.5 s seguidos arriba           → "?"  (una sola por cada vez que se levantan las cejas)
+   más de 4 s arriba               → no es una pregunta: ese nivel pasa a ser la nueva cara neutra
+```
+
+La última regla viene de los datos: en una sesión la razón se quedó en ~1.11 durante 50 s seguidos (cambio de postura y de mirada) y, sin ella, cada parpadeo rearmaba una pregunta falsa. Una pregunta real dura 1.5-3 s.
+
+#### 2.3.6 Cara tapada por una mano
+
+Con dos manos en escena es común taparse la cara. Cuando eso pasa, Face Mesh sigue dando puntos pero deformados, y la pose y las cejas dejan de ser confiables. El **error de reproyección de `solvePnP`** lo detecta:
+
+| Situación (datos reales) | Error / alto de la cara |
+|---|---|
+| Cara visible | 0.8-1.4 % |
+| Manos encima de la cara | 1.7-3.8 % |
+
+Por encima de **1.8 %** el fotograma no cuenta para ningún gesto facial y el indicador muestra `Modo: Cara tapada`.
+
+#### 2.3.7 Negar y asentir con ángulos reales (`DetectorOscilacion`)
+
+Negar y asentir son **patrones temporales** sobre el yaw y el pitch en grados. Una media móvil exponencial (τ = 2.5 s) sigue la postura neutra, así que mirar a un lado y quedarse ahí no cuenta. Se cuentan las **entradas** a zonas con histéresis dentro de una ventana de 1.4 s:
+
+| Gesto | Señal | Amplitud | Condición | Medido |
+|---|---|---|---|---|
+| Negación | yaw | 8° | ≥ 3 entradas **en ambos lados** | un "no" real oscila ±19° |
+| Afirmación | pitch | 5° | ≥ 3 entradas | un "sí" real oscila ±5-6°; con 2 entradas, mover la cabeza al leer la pantalla contaba como "sí" |
+
+Tras un gesto de cabeza hay un enfriamiento de 1.2 s y las cejas se ignoran 0.8 s.
 
 ---
 
@@ -323,12 +374,10 @@ Tras un gesto de cabeza hay un enfriamiento de 1.2 s.
 
 | Evento | Qué dice |
 |---|---|
-| Se registra una letra (barra al 100 % o trazo completo) | el nombre de la letra |
+| Se registra una letra con cualquier mano (barra al 100 % o trazo completo) | el nombre de la letra |
 | Se **confirma** la palabra (asentir) | la palabra completa |
 | Pasan **4 s sin nuevas letras** | la palabra pendiente (una sola vez) |
 | Espacio, borrar, `?` | nada |
-
-Un segundo asentimiento, o la inactividad, **no repiten** una palabra ya leída.
 
 ---
 
@@ -336,14 +385,16 @@ Un segundo asentimiento, o la inactividad, **no repiten** una palabra ya leída.
 
 ### 3.1 Estabilización
 
-`Estabilizador`: una configuración nueva solo se acepta si aparece en **4 fotogramas consecutivos** (≈ 140 ms), lo que elimina el parpadeo de la etiqueta.
+`Estabilizador` (uno por mano): una configuración nueva solo se acepta si aparece en **4 fotogramas consecutivos**, lo que elimina el parpadeo de la etiqueta.
 
 ### 3.2 Constructor de palabras *Hold-to-Type*
 
 | Característica | Detalle |
 |---|---|
+| Por mano | Cada mano tiene su propio contador: **cualquiera de las dos escribe** |
 | Retención | Una seña **estática** se registra al sostenerla **quieta 1.5 s** (`time.monotonic()`, no depende de los FPS) |
-| Barra de progreso | Verde, redondeada y suavizada; **se reinicia al instante** si cambia la seña |
+| Dos manos, letras distintas | Se escriben ambas, en el orden en que se completan (`Izq: B` y `Der: O` → `BO`) |
+| Dos manos, **la misma letra** | Se escribe **una sola vez**: mientras una mano la siga sosteniendo, la otra no la repite (con datos reales a veces se hacía la letra con ambas manos) |
 | Anti-repetición | No se repite hasta cambiar de seña o bajar la mano |
 | Señas con movimiento | Se registran **al completar el trazo** (la barra salta al 100 %) |
 | Texto | Los espacios se ven como espacios y **cualquier guion bajo se reemplaza por un espacio** en pantalla, en la voz y en lo que se envía al hardware (`limpiar_texto`) |
@@ -351,16 +402,15 @@ Un segundo asentimiento, o la inactividad, **no repiten** una palabra ya leída.
 ### 3.3 Interfaz dual
 
 **Ventana "Camara IA - Deteccion LSM"**
-- Video en espejo con el esqueleto de la mano y los puntos de cejas y ojos.
-- Recuadro con esquinas resaltadas (gris: sin seña · azul: cargando · verde: registrada · ámbar: configuración que necesita movimiento).
-- Etiqueta con la seña y una pista (`o traza una J`, `o agita para K`…).
-- **Estela** del dedo mientras se dibuja un trazo.
-- **Medidor de cejas siempre visible** (`CEJAS x1.11`) con la marca del umbral: se ve cómo se "carga" la pregunta.
-- Indicador `Modo: Neutro / Pregunta ? / Negacion X / Afirmacion OK / Calibrando...`.
-- Barra de progreso inferior y contador de FPS.
-- Modo diagnóstico (`D`): estado de cada dedo, métricas del pulgar y de la cabeza.
+- Video en espejo con **el esqueleto de cada mano** (puntos azules la izquierda, verdes la derecha) y los puntos de cejas y ojos.
+- Por cada mano: recuadro con esquinas resaltadas (gris: sin seña · azul: cargando · verde: registrada · ámbar: configuración que necesita movimiento), **etiqueta `Izq: B` / `Der: O`**, mini barra de progreso propia, pista (`o traza una J`, `o agita para K`…) y **estela** del dedo mientras dibuja.
+- **Resumen arriba al centro:** `Izq: B  |  Der: O`.
+- **Medidor de cejas** (`CEJAS x1.11` con la marca del umbral) y debajo los **ángulos reales de la cabeza** (`P+3 Y-12 R-1`).
+- Indicador `Modo: Neutro / Pregunta ? / Negacion X / Afirmacion OK / Calibrando... / Cara tapada`.
+- Barra inferior de la mano principal (`Sosten la sena B (Der) quieta... 60%`) y FPS.
+- Modo diagnóstico (`D`): por mano, estado y extensión de cada dedo, flexiones, orientación, pulgar, normal de la palma, cruce y velocidad; de la cabeza, desviaciones de yaw y pitch, distancia y apertura de ojos.
 
-**Ventana "Panel Traductor LSM"** (lienzo NumPy, sin imágenes externas): la seña actual en grande (con la **Ñ** dibujada a mano, porque las fuentes de OpenCV no la incluyen), cómo se hace, la **guía del alfabeto** en dos columnas (en naranja las que llevan movimiento y resaltada la que se está haciendo), un recordatorio de los gestos del rostro, la caja de texto y el estado de la voz. El fondo del panel se dibuja una sola vez y se copia en cada fotograma.
+**Ventana "Panel Traductor LSM"** (lienzo NumPy): la seña de la **mano principal** en grande con la etiqueta `MANO IZQ` / `MANO DER` (la principal es la que acaba de registrar o la que más avanzó su barra), el resumen de ambas manos en el encabezado, cómo se hace, la **guía del alfabeto**, el recordatorio de los gestos del rostro, la caja de texto y el estado de la voz.
 
 ### 3.4 Teclado
 
@@ -370,14 +420,14 @@ Un segundo asentimiento, o la inactividad, **no repiten** una palabra ya leída.
 | `Backspace` | Borrar la última letra |
 | `C` | Limpiar todo el texto |
 | `D` | Modo diagnóstico |
-| `R` | Recalibrar el rostro |
+| `N` (o `R`) | Recalibrar la cara neutra |
 | `ESC` o la `X` de cualquier ventana | Salir limpiamente |
 
 ---
 
 ## 4. Integración de hardware
 
-> **Estado:** el **puente de software está implementado**: `enviar_a_hardware(texto_actual)` se llama **solo cuando el texto cambia** (por una seña, por el rostro o por el teclado) e imprime `[SERIAL MOCK] Enviando al ESP32: <texto>`. El **hardware físico** (ESP32 y pantalla) está en fase de **diseño**. Para conectarlo basta con reemplazar el cuerpo de esa función por el envío serial de la sección 4.2.
+> **Estado:** el **puente de software está implementado**: `enviar_a_hardware(texto_actual)` se llama **solo cuando el texto cambia** (por una seña de cualquier mano, por el rostro o por el teclado) e imprime `[SERIAL MOCK] Enviando al ESP32: <texto>`. El **hardware físico** (ESP32 y pantalla) está en fase de **diseño**. Para conectarlo basta con reemplazar el cuerpo de esa función por el envío serial de la sección 4.2.
 
 ### 4.1 Arquitectura propuesta
 
@@ -495,32 +545,31 @@ void loop() {
 | **1. Prototipo manual** | Letras estáticas, hold-to-type, interfaz dual | Completado |
 | **2. Componentes no manuales** | Pregunta, negación y afirmación por rostro y cabeza | Completado |
 | **3. Puente de hardware** | `enviar_a_hardware()` (mock) | Completado |
-| **4. Alfabeto completo** | 21 letras estáticas + J, K, Ñ, Q, X, Z con movimiento | Completado (varias letras con fiabilidad media o baja, ver sección 8) |
+| **4. Alfabeto completo** | 21 letras estáticas + J, K, Ñ, Q, X, Z con movimiento | Completado |
 | **5. Voz** | Cada letra y la palabra completa, en un hilo aparte | Completado |
-| **6. Hardware físico** | Pantalla OLED en protoboard por USB o Wi-Fi | Diseñado |
-| **7. Machine Learning** | Clasificador entrenado con landmarks propios (k-NN, Random Forest, red densa) para las letras ambiguas (F, R, U, P, C, Q, X) | Planeado |
-| **8. Señas dinámicas con LSTM / GRU** | Reemplazar las reglas de trazo; añadir CH, LL y RR | Planeado |
-| **9. Frases continuas** | Modelos secuenciales / Transformers | Planeado |
-| **10. Impacto social** | App móvil o dispositivo cerrado; validación con personas usuarias de LSM | Planeado |
+| **6. Dos manos y geometría 3D** | Lateralidad, estado por mano, espejo canónico, One-Euro, rasgos 3D, `solvePnP`, cara tapada | Completado (P/R y algunos trazos con fiabilidad media, ver sección 8) |
+| **7. Hardware físico** | Pantalla OLED en protoboard por USB o Wi-Fi | Diseñado |
+| **8. Machine Learning** | Clasificador entrenado con landmarks propios (k-NN, Random Forest, red densa) para los pares ambiguos (P/R, D/X, ESPACIO/mano relajada) | Planeado |
+| **9. Señas dinámicas con LSTM / GRU** | Reemplazar las reglas de trazo; añadir CH, LL y RR | Planeado |
+| **10. Frases continuas** | Modelos secuenciales / Transformers | Planeado |
+| **11. Impacto social** | App móvil o dispositivo cerrado; validación con personas usuarias de LSM | Planeado |
 
 ### 5.1 Hacia el aprendizaje automático
 
-El clasificador de reglas es explicable, pero escala mal: cada letra nueva exige diseñar reglas a mano. La evolución natural es **aprender las fronteras de decisión a partir de datos**:
+El clasificador de reglas es explicable, pero escala mal: cada letra nueva exige diseñar reglas a mano, y la sección 8 muestra que la forma de hacer algunas letras varía entre sesiones más que la diferencia entre ellas. La evolución natural es **aprender las fronteras de decisión a partir de datos**:
 
 ```
  Captura de datos        Vector de rasgos                 Modelo                Salida
  ┌──────────────┐       ┌───────────────────────┐       ┌───────────────┐      ┌─────────┐
- │ sesiones     │  ──▶  │ 21 landmarks × (x,y,z)│ ──▶   │ k-NN / RF     │ ──▶  │ letra   │
- │ guiadas      │       │ normalizados = 63 val.│       │ (estáticas)   │      │         │
+ │ sesiones     │  ──▶  │ rasgos 3D de la mano  │ ──▶   │ k-NN / RF     │ ──▶  │ letra   │
+ │ guiadas      │       │ canónica (sección 2.1)│       │ (estáticas)   │      │         │
  └──────────────┘       └───────────────────────┘       ├───────────────┤      ├─────────┤
                                                         │ LSTM sobre    │ ──▶  │ seña    │
-                        secuencia de T frames ──▶       │ T × 63        │      │ dinámica│
+                        secuencia de T frames ──▶       │ T × rasgos    │      │ dinámica│
                                                         └───────────────┘      └─────────┘
 ```
 
-El método de las **sesiones guiadas** que se usó para calibrar (la ventana muestra la lámina de cada letra y se graban solo coordenadas de landmarks) ya es una herramienta de **captura de datos**. Con varias personas se podría entrenar un clasificador sobre 63 números normalizados por fotograma, mucho más ligero que una CNN sobre imágenes.
-
-**Por qué LSTM para las señas dinámicas:** una seña en movimiento es una **serie temporal** de poses; las redes LSTM mantienen un estado interno que captura la dependencia entre fotogramas y permitirían reemplazar las reglas de trazo actuales.
+Las **sesiones guiadas** que se usaron para calibrar (sección 8.1) ya son una herramienta de **captura de datos**: graban solo coordenadas de ambas manos y del rostro. Con varias personas se podría entrenar un clasificador sobre los rasgos 3D, mucho más ligero que una CNN sobre imágenes.
 
 ### 5.2 Impacto social
 
@@ -546,10 +595,12 @@ El método de las **sesiones guiadas** que se usó para calibrar (la ventana mue
 
 | Librería | Uso |
 |---|---|
-| `mediapipe==0.10.18` | Detección de la mano (Hands) y del rostro (Face Mesh) |
-| `opencv-python` | Captura de video, dibujo y ventanas |
-| `numpy` | Panel, trayectorias y operaciones con matrices |
+| `mediapipe==0.10.18` | Detección de las manos (Hands, con coordenadas de mundo y lateralidad) y del rostro (Face Mesh) |
+| `opencv-python` | Captura de video, dibujo, ventanas y **`solvePnP`** |
+| `numpy` | Geometría 3D, filtro One-Euro, panel y trayectorias |
 | `pyttsx3` | Voz (en Windows instala también `comtypes` y `pywin32`) |
+
+> **No se agregaron dependencias para esta versión.** El filtro One-Euro (20 líneas) y la pose de la cabeza (`cv2.solvePnP`) no necesitan librerías extra; las coordenadas del modelo canónico de la cara están escritas en `main.py`.
 
 ### 6.3 Crear el entorno virtual (`venv`)
 
@@ -579,9 +630,10 @@ py -3.12 -m venv venv
 ### 6.5 Recomendaciones de uso
 
 - Iluminación frontal y uniforme; evita tener una ventana detrás.
-- Mano completa dentro del cuadro, a 40-80 cm de la cámara.
-- Al iniciar, **mantén la cara neutra** unos 1.5 s (`Modo: Calibrando...`).
-- **Los trazos (Z, ?, J…) deben ser pequeños, del tamaño de la mano**, sin sacarla del cuadro: si sale, la cámara pierde el seguimiento.
+- Manos completas dentro del cuadro, a 40-80 cm de la cámara.
+- **Con dos manos:** tenlas a la altura del pecho, separadas y **sin tapar la cara**. Con las manos juntas delante de la cara, MediaPipe llegó a no detectar ninguna (sección 8.3).
+- Al iniciar, **mantén la cara neutra** unos 1.5 s (`Modo: Calibrando...`); `N` recalibra.
+- **Los trazos (Z, ?, J…) deben ser pequeños, del tamaño de la mano**, sin sacarla del cuadro. Los movimientos muy rápidos pueden hacer que la cámara pierda la mano.
 - Sostén cada letra **quieta** hasta que la barra llegue al 100 %.
 
 > Los mensajes `W0000 … inference_feedback_manager` que aparecen en la consola son avisos internos de MediaPipe, no errores.
@@ -590,30 +642,36 @@ py -3.12 -m venv venv
 
 ## 7. Calibración
 
-Todos los umbrales están al inicio de `main.py`. El **modo diagnóstico** (tecla `D`) muestra los valores medidos en vivo.
+Todos los umbrales están al inicio de `main.py`, cada uno con el rango medido que lo justifica. El **modo diagnóstico** (tecla `D`) muestra los valores en vivo.
 
 | Constante | Valor | Controla |
 |---|---|---|
 | `SEGUNDOS_PARA_ESCRIBIR` | 1.5 s | Retención de una seña estática |
 | `FRAMES_ESTABLES` | 4 | Consenso para aceptar una seña |
 | `V_QUIETO` | 1.2 manos/s | Por encima, la mano "se mueve" y no escribe letras estáticas |
-| `PULGAR_ABIERTO` / `PULGAR_FUERA` | 0.48 / 0.65 | Pulgar apartado / pulgar recto y lejos |
-| `ANG_B_MAX` / `ANG_ESPACIO_MIN` | 20° / 48° | B y ESPACIO (entre ambos, mano relajada) |
-| `ANG_U_MAX` / `ANG_V_MIN` | 14° / 25° | U y V |
-| `O_CONTACTO` / `F_CONTACTO` | 0.20 / 0.35 | Contacto pulgar-índice para O y F |
-| `ST_DISTANCIA` | 0.20 | Frontera entre S y T |
-| `Q_DIR_INDICE_MIN` | 120° | Frontera entre Q y X |
-| `TRAYECTORIA_FRAMES` | 45 | Memoria del buffer |
-| `VAIVEN_AMP` | Ñ 0.10 · Q/X 0.07 · K 0.15 | Amplitud mínima de cada vaivén |
+| `ONE_EURO_CORTE_MIN` / `ONE_EURO_BETA` | 1.5 Hz / 0.4 | Filtro antivibración |
+| `CONTINUIDAD_DIST` / `LATERALIDAD_CAMBIO` | 1.2 / 0.85 | Seguimiento de cada mano en su ranura |
+| `MAX_MANOS` | 2 | Manos que busca MediaPipe (1 = más FPS en una PC lenta) |
+| `EXT_RECTO` / `EXT_CERRADO` | (1.40, 1.54, 1.45, 1.25) / 1.15 | Extensión 3D de un dedo recto (índice, medio, anular, meñique) / cerrado |
+| `FLEX_MAX_RECTO` / `ARTICULACION_RECTA` / `EXT_TOLERANCIA` | 75° / 55° / 0.15 | Ángulos articulares de un dedo recto |
+| `MENIQUE_RECTO` | 50° | Meñique recto aunque el nudillo lo incline (Y de lado) |
+| `PULGAR_FUERA` | −0.45 | Pulgar por fuera del nudillo del índice (A, L, G, Y, ESPACIO) |
+| `T_ALTURA` / `E_MCP_MAX` | 0 / 33° | T contra S, y E contra S |
+| `F_CONTACTO` / `F_FLOJA` | 0.55 / (0.75, 1.30) | Pinza de la F |
+| `O_CONTACTO` / `C_GAP` / `C_INDICE_MIN` | 0.32 / 0.32-1.10 / 1.05 | O y C |
+| `V_CRUCE` / `R_CRUCE` / `U_ANG_MAX` | 0.40 / −0.05 / 11° | V, R, U (el resto, P) |
+| `ESPACIO_PULGAR` / `Y_DIST` | 1.00 / 0.75 | ESPACIO y Y |
+| `X_DIR_MIN` / `X_ORIENT_MIN` / `Q_DIR_INDICE_MIN` | 60° / 48° / 105° | D, X y Q |
+| `VAIVEN_AMP` | Ñ 0.07 · Q/X 0.07 · K 0.15 | Amplitud mínima de cada vaivén |
+| `VAIVEN_RECTITUD` / `VAIVEN_PROPORCION` | 0.5 / 2.5 | Movimiento coherente de los vaivenes |
 | `BORRAR_RECORRIDO_MIN` / `BORRAR_VEL_MIN` | 1.10 / 3.0 | Barrido de BORRAR |
-| `CEJAS_UMBRAL` / `CEJAS_UMBRAL_SALIDA` | 1.07 / 1.04 | Cejas arriba / de vuelta a neutro |
-| `CEJAS_SEGUNDOS` | 1.5 s | Tiempo con las cejas arriba para agregar `?` |
-| `NEG_AMPLITUD` / `AFIRM_AMPLITUD` | 0.08 / 0.035 | Negar y asentir |
+| `CARA_ERROR_MAX` | 1.8 % | Cara tapada |
+| `CEJAS_UMBRAL` / `CEJAS_UMBRAL_SALIDA` / `CEJAS_MAX_SEGUNDOS` | 1.07 / 1.04 / 4 s | Cejas arriba / de vuelta / nueva cara neutra |
+| `NEG_AMPLITUD` / `AFIRM_AMPLITUD` | 8° / 5° | Negar (yaw) y asentir (pitch) |
 | `ACCION_NEGACION` | `"LETRA"` | Qué borra negar: `"LETRA"`, `"PALABRA"` o `"TODO"` |
 | `VOZ_INACTIVIDAD` | 4.0 s | Tiempo sin letras para leer la palabra pendiente |
-| `VOZ_HABILITADA` | `True` | Activar o desactivar la voz |
 
-**Procedimiento:** pulsa `D`, haz la seña que falla, lee el estado de cada dedo y los valores del pulgar, compáralos con la tabla de la sección 2.1.4 y ajusta la constante correspondiente.
+**Procedimiento:** pulsa `D`, haz la seña que falla, compara los valores de esa mano con la tabla de la sección 2.1.6 y ajusta la constante correspondiente. Lo más fiable es grabar una sesión guiada y medir (sección 8.1).
 
 ---
 
@@ -621,71 +679,141 @@ Todos los umbrales están al inicio de `main.py`. El **modo diagnóstico** (tecl
 
 ### 8.1 Metodología
 
-Se grabaron **cuatro sesiones guiadas** con la cámara real del autor: una ventana mostraba la **lámina oficial** de cada letra (con una animación del trazo para los gestos con movimiento) y se guardaron **solo coordenadas de landmarks**, sin imágenes. Después cada grabación se **reprodujo a través del mismo código de `main.py`** (`Estabilizador`, `Trayectoria`, `Escritor`…), de modo que los resultados son los del programa real.
+Se grabaron **nueve sesiones guiadas** con la cámara real del autor. Una ventana mostraba la **lámina oficial** de cada letra (espejada para la mano izquierda), qué mano usar, una animación del trazo y un aviso en vivo si la mano detectada no era la pedida o si no se veían las dos manos. Se guardaron **solo coordenadas** (manos en imagen y en 3D de mundo, lateralidad, 468 puntos del rostro), nunca imágenes; se borraron al terminar.
 
-| Sesión | Duración | Fotogramas | Fotogramas con mano o cara |
-|---|---|---|---|
-| Cara (cejas, mirar, parpadear, girar, negar, asentir) | 39 s | 793 | 100 % cara |
-| Letras estáticas (23 fases) | 103 s | 2 978 | 97 % mano |
-| Trazos 1 | 67 s | 1 950 | 67 % mano |
-| Trazos 2 (con animación del recorrido) | 72 s | 2 127 | 91 % mano |
+Cada grabación se **reprodujo con el `Traductor` real de `main.py`** (seguidor de manos, One-Euro, clasificador, estabilizador, trayectorias, hold-to-type y rostro), así que los resultados son los del programa, no de una copia.
 
-> **Limitación de la validación:** son datos de **una sola persona**. Los umbrales de la mano se calibraron con la sesión de letras estáticas y con la de trazos 1, así que esos resultados son de entrenamiento. Solo la sesión de trazos 2 es, en parte, una prueba con datos nuevos. Falta validar con más personas.
+| # | Sesión | Uso | Duración | Fotogramas |
+|---|---|---|---|---|
+| 1 | Letras estáticas (pedida con la derecha; de la F en adelante se hizo con la izquierda) | calibración | 104 s | 2 700 |
+| 2 | Letras estáticas, mano izquierda | calibración | 104 s | 2 645 |
+| 3 | Letras estáticas, mano derecha | calibración | 104 s | 2 694 |
+| 4 | Trazos con cada mano + acomodar la mano + movimiento libre | calibración | 175 s | 4 376 |
+| 5 | Una mano escribe y la otra a la vista, cruzar manos; rostro (cejas, asentir, negar, mirar arriba/abajo, girar, lejos) | calibración | 154 s | 3 240 |
+| 6 | Dos manos a la vez (letras distintas, trazo con una mientras la otra sostiene) | calibración | 59 s | 961 |
+| 7 | **Prueba:** letras estáticas, derecha e izquierda | prueba | 190 s | 2 986 |
+| 8 | **Prueba:** trazos con cada mano + rostro | prueba | 181 s | 3 093 |
+| 9 | **Prueba final:** letras estáticas, derecha e izquierda | prueba independiente | 190 s | 2 919 |
 
-### 8.2 Letras estáticas (sesión real, 23 fases)
+> **Cómo leer las cifras.** Las sesiones 1-6 se usaron para diseñar y calibrar, así que sus resultados son "de entrenamiento". Las sesiones 7, 8 y 9 se midieron primero con el **código congelado** antes de verlas: esas son las **mediciones independientes**. Después de analizar sus fallos se hicieron ajustes con motivo físico; las cifras posteriores sobre esas sesiones ya **no** son independientes y se reportan aparte, marcadas como "versión final". Son datos de **una sola persona**, grabados el mismo día.
 
-Precisión por fotograma (en los últimos 2.5 s de cada fase):
+### 8.2 Lateralidad
 
-| Fiabilidad | Letras |
+| Medida | Resultado |
 |---|---|
-| **Alta (≥ 96 %)** | A 99 · B 100 · D 96 · E 100 · G 97 · H 97 · I 100 · L 100 · M 100 · N 100 · O 100 · S 100 · T 100 · V 100 · W 100 · Y 100 · ESPACIO 100 |
-| **Media (78-91 %)** | C 91 · P 88 · U 78 |
-| **Baja (< 70 %)** | R 68 · F 39 |
-| Mano relajada | no escribió **ninguna** letra |
+| Etiqueta de MediaPipe con la imagen espejada | coincide con la mano real; confianza 0.94-1.00 |
+| Duplicados de la misma mano y parpadeos de etiqueta | ocurrieron en las sesiones 1 y 6; los resuelve `SeguidorManos` (28 pruebas de lógica, sección 8.10) |
+| Dos manos a la vez **con la guía** (manos al pecho, separadas, sin tapar la cara) | **ambas detectadas el 100 %** de los fotogramas en todas las fases |
+| Dos manos juntas **delante de la cara** (sesión 5) | MediaPipe no detectó **ninguna** mano durante ~25 s |
 
-**De extremo a extremo** (estabilizador + mano quieta + hold-to-type) se escribió `ABCDEGHILMNOPKSTUVWY␣` frente a lo esperado `ABCDEFGHILMNOPRSTUVWY␣`: **20 de los 22 símbolos esperados salieron correctos y en orden**. Faltaron la **F** (solo hubo ≈ 0.4 s de F limpia; después la mano se movió rápido y la cámara llegó a perderla) y la **R** (se sostuvo quieta 1.4 s, menos de los 1.5 s necesarios). Hubo **una K falsa** (ver sección 9).
-
-### 8.3 Señas con movimiento
-
-| Gesto | Sesión nueva (trazos 2) | Sesión anterior (trazos 1) |
-|---|---|---|
-| **Z** | 3 de 4 | sin datos (la mano salía del cuadro) |
-| **?** | **4 de 4** | sin datos |
-| **J** | 2 de 3 | 1 |
-| **K** | 1 | 0 en su fase (hizo un solo barrido; ya no es el patrón) |
-| **Ñ** | 1 | 1 |
-| **Q** | 1 | 2 |
-| **X** | 1 | 2 |
-| **BORRAR** | **3 de 3** | 1 |
-| **Movimiento libre** (sin hacer letras) | **0 falsos** | **0 falsos** |
-
-Algunas detecciones aparecen en los primeros segundos de la fase siguiente (por ejemplo una K al inicio de la fase de la J): son del gesto anterior, que se seguía haciendo cuando sonó el aviso del cambio de fase, y no se cuentan como aciertos. En la sesión nueva, **Q y X se distinguieron correctamente** gracias a la dirección del índice; antes de usar ese criterio la X se leía como Q.
-
-### 8.4 Rostro
-
-Con el detector **nuevo** sobre la grabación real: **2 de 2 preguntas** detectadas (a los 8.4 s y 15.4 s, ≈ 1.5 s después de subir las cejas), **1 negación**, **2 asentimientos** (un solo asentimiento de 4 s, con el enfriamiento de 1.2 s) y **cero eventos falsos** al mirar abajo, parpadear, girar la cabeza o quedarse mirando de lado. **El detector anterior detectaba 0 de 2 preguntas.**
-
-### 8.5 Invarianza a escala, posición y mano (2 890 fotogramas reales transformados)
-
-| Transformación | Fotogramas con la misma clasificación |
-|---|---|
-| Escala 0.4×, 0.7×, 1.8×, 2.5× | **100 %** |
-| Desplazada | **100 %** |
-| Espejo (la otra mano) | **100 %** |
-| Escala 0.5× + espejo + desplazada | **100 %** |
-| Giro en el plano de 5°, 10°, 20° | 99.7 %, 99.7 %, 99.6 % |
-| Ruido gaussiano del 1.5 % de la escala | 95.1 % |
-
-### 8.6 Voz y rendimiento
+### 8.3 Dos manos en escena
 
 | Prueba | Resultado |
 |---|---|
-| **38 comprobaciones de lógica** (escritor, política de voz, cola de voz, guiones bajos, Ñ) | todas correctas |
-| `decir()` | regresa en **0.00 ms** |
-| Tiempos por fotograma con la carga real (cámara + manos + rostro + dibujo), **sin voz** y **con voz continua** (8 frases) | mediana **47.0 ms en ambos casos**, p95 62 vs 63 ms, **ningún fotograma mayor que 2× la mediana** mientras habla |
-| Costo de `dibujar_panel` | de 8.5 ms a **1.4 ms** (fondo estático en caché; idéntico píxel a píxel) |
-| FPS finales | **27-29 FPS** (MediaPipe Hands ≈ 26 ms, Face Mesh ≈ 4 ms, el resto ≈ 7 ms) |
-| Prueba en vivo de `main.py` desde otra carpeta | ventanas lado a lado, 3 teclas → 3 envíos al hardware, cierra limpio con la `X` |
+| Letras distintas con cada mano a la vez (B-O, L-V, Y-D, W-A, F-R, I-U) | **15 de 15 letras escritas correctamente**, cada una por su mano |
+| Izquierda sostiene B mientras la derecha dibuja Z; derecha sostiene A mientras la izquierda hace la J | B y A escritas; Z y J reconocidas en su mano |
+| Ambas manos relajadas a la vista | **no escribieron nada** |
+| La misma letra hecha con ambas manos (A, B, L, V) | **una sola letra** por seña (antes de la regla se escribía dos veces) |
+| BORRAR con la derecha mientras la izquierda sostiene L | **no reconocido**: en el barrido rápido MediaPipe perdió la mano |
+| Precisión por fotograma con ambas manos a la vez | izquierda 99.7 %; derecha 80.0 % (R y U bailaban), aun así escritas bien |
+
+### 8.4 Letras estáticas
+
+**Calibración** (sesiones 2 y 3, versión final; exactitud por fotograma en los últimos 2.5 s de cada fase):
+
+| Mano | Exactitud media | Letras ≥ 95 % | Escritas de punta a punta |
+|---|---|---|---|
+| Derecha | 99.5 % | 21 de 22 | **22 de 22** |
+| Izquierda | 95.3 % | 18 de 22 | **22 de 22** |
+
+**Mediciones independientes** (cada sesión de prueba medida con el código congelado antes de verla):
+
+| Sesión | Mano | Exactitud media | Letras ≥ 95 % | Por debajo | Escritas de punta a punta | Versión anterior (2D) |
+|---|---|---|---|---|---|---|
+| 7 | Derecha | **94.4 %** | 17 de 22 | P 71 (sale R), S 74 (sale T), G 82, R 87, ESPACIO 62 | **35 de 44** | 80.3 % |
+| 7 | Izquierda | **79.8 %** | 14 de 22 | Y 0, P 24 y R 26 (intercambiadas), F 44, G 41, M 59, S 81, ESPACIO 81 | | |
+| 9 | Derecha | **85.6 %** | 17 de 22 | C 6 (sale I), R 10 (sale P), L 39 (seguía la I anterior), N 53, E 74 | **41 de 44** | 79.6 % |
+| 9 | Izquierda | **96.2 %** | 20 de 22 | G 48 (sale A), ESPACIO 73 | | |
+
+**Análisis de los fallos.** Casi todos fueron **variación de ejecución entre sesiones**: en la sesión 7 la P izquierda se hizo con las puntas cruzadas y la palma de frente (como la R de la calibración) y la R casi sin cruzar; la Y con índice y medio menos cerrados; la F con la pinza floja; la S con el pulgar más alto; el ESPACIO con el pulgar menos abierto. En la 9, la C derecha fue más cerrada (casi una O), la N y la E quedaron con el índice justo en la frontera de "recto" y la G izquierda con el índice doblado. Con esa variación se hicieron ajustes con motivo físico: I/Y con índice y medio "no rectos", F con pinza floja si el índice está claramente doblado, frontera S/T en el punto medio, ESPACIO con el pulgar a ≥ 1.00, **dedo recto por ángulos articulares** (separa la N de la E), C con el índice más cerrado y la "pistola" con el índice largo aunque doblado (G).
+
+**Versión final** (ajustada con todos los datos, **ya no independiente**):
+
+| Sesión | Mano | Exactitud media | Letras ≥ 95 % | Escritas de punta a punta |
+|---|---|---|---|---|
+| 3 (calibración) | Derecha | 99.5 % | 21 de 22 | 22 de 22 |
+| 2 (calibración) | Izquierda | 95.3 % | 18 de 22 | 22 de 22 |
+| 7 | Derecha / Izquierda | 96.0 % / 91.6 % | 18 / 18 de 22 | 40 de 44 (fallan P y R) |
+| 9 | Derecha / Izquierda | 93.0 % / 98.4 % | 20 / 20 de 22 | **43 de 44** (falla la R derecha, que sale P) |
+
+Ninguna fase de mano relajada escribió letras ni espacios.
+
+### 8.5 Señas con movimiento
+
+| Medida | Calibración (sesión 4), versión final | Prueba (sesión 8), independiente | Prueba (sesión 8), versión final |
+|---|---|---|---|
+| Trazos reconocidos (fases con al menos un acierto) | **16 de 16** | **11 de 16** | 13 de 16 |
+| Fallos | — | Q y X derecha; K, Z y BORRAR izquierda | Q derecha; K y Z izquierda |
+| Trazos falsos | 1 (`?` dentro de una Z izquierda) | 5 | 5: Z dentro de la X derecha, `?` en la Z izquierda (2), K al acomodar la izquierda (2) |
+| Acomodar la mano entre U, V, R, P y H | **0 K falsas** con cada mano | | 2 K falsas (izquierda) |
+
+En la prueba, la Q derecha casi no se vio (25 fotogramas con mano); la K izquierda fue un vaivén más chico (< 0.27 manos) o vertical; la Z izquierda se dibujó con forma de `?`. BORRAR izquierda y X derecha se recuperaron con las ventanas en segundos y la regla de D/X.
+
+### 8.6 Rostro
+
+Se corrió el `AnalizadorFacial` real sobre **todo** el tiempo con cara visible, incluido el que se pasó haciendo letras con las manos (que es cuando más falsos positivos aparecen):
+
+| Medida (las 9 sesiones, 19.4 min con cara visible) | Versión nueva | Versión anterior (2D) |
+|---|---|---|
+| Pregunta con cejas | 3 de 7 (las demás subidas fueron mínimas o de < 1.5 s) | 3 de 7 |
+| Negar | 2 de 2 | 2 de 2 |
+| Asentir | 2 de 2 | 2 de 2 |
+| **Eventos falsos** | **11** (8 preguntas, 3 asentimientos, 0 negaciones) | **100** (74 asentimientos, 5 negaciones, 21 preguntas) |
+
+Las sesiones de prueba por separado (6-9, sin ajustar el rostro después de verlas): 5 falsos en la sesión 9 y 2 en las 6-8.
+
+Lo que más redujo los falsos: ángulos reales de `solvePnP`, tres cabeceos para asentir, el filtro de cara tapada (error de reproyección) y la regla de "más de 4 s arriba = nueva cara neutra". **Lo que queda son preguntas falsas mientras se hacen letras** (≈ 1 cada 2.5 min): al mirar la mano o la pantalla, las cejas suben de verdad más de 10 % sin que la cabeza se mueva. Subir el umbral a 1.10 solo las bajaría de 8 a 5 y perdería una pregunta real, así que se dejó en 1.07. En una prueba en vivo de 25 s también aparecieron 2 `?` así.
+
+### 8.7 Filtro One-Euro (con y sin filtro, mismas grabaciones)
+
+| Sesión (versión final) | Sin filtro | Con filtro |
+|---|---|---|
+| 2 (izquierda) | 21 de 22 escritas; una Ñ falsa al sostener la H | **22 de 22**; sin trazos falsos |
+| 3 (derecha) | 22 de 22; 98.8 % por fotograma | **22 de 22**; 99.5 % |
+| 1 (derecha A-E, izquierda F-Y) | 20 de 22; un `?` falso al sostener la E; derecha 78.7 % | **21 de 22**; sin trazos falsos; derecha 85.2 % |
+| 9 (prueba final) | 41 de 44; una J falsa al sostener la Y; izquierda 96.5 %, derecha 92.6 % | **43 de 44**; sin trazos falsos; izquierda 98.4 %, derecha 93.0 % |
+| 4 (trazos) | 15 de 16 trazos | **16 de 16** |
+
+### 8.8 Normalización de simetría
+
+Al reflejar la mano izquierda, **las mismas reglas** clasifican ambas manos sin reglas separadas. Prueba de espejo con datos reales: cada mano de las sesiones 2, 3 y 9 se reflejó (imagen y mundo) y se le dio la etiqueta de la otra mano:
+
+| Medida | Resultado |
+|---|---|
+| Clasificación por fotograma igual entre la mano y su espejo | **8 336 de 8 336 (100 %)** |
+| Texto escrito de punta a punta por el `Traductor` completo (seguidor, filtro, hold-to-type) | **idéntico** en las tres sesiones |
+
+### 8.9 Rendimiento
+
+| Medida | Resultado |
+|---|---|
+| `Traductor.paso` (dos canales de mano, seguidor, clasificación 3D, trazos y rostro con `solvePnP`) | **3.3 ms** de mediana (p95 6.8 ms) |
+| Dibujo de ambas ventanas | 7.3 ms de mediana (p95 16.6 ms) |
+| MediaPipe (2 manos + rostro), laptop **conectada** (sesiones 1-4) | ≈ 25 ms por fotograma → **25-26 FPS** de captura |
+| MediaPipe solo, laptop **en batería** (40 %) | manos 37 ms con `max_num_hands=1` y **76 ms con 2** (con una mano a la vista busca la segunda en cada frame); rostro 7-11 ms |
+| `main.py` completo en vivo, en batería | **17 FPS** (60 ms de mediana por fotograma), 400 fotogramas, teclas simuladas, cierre limpio |
+| Voz | no bloquea el bucle (`decir()` regresa al instante; hilo propio) |
+
+El costo principal es MediaPipe, no el código del proyecto. En una PC lenta, `PROCESAR_ROSTRO_CADA = 2` o `MAX_MANOS = 1` recuperan FPS. Los trazos se miden en segundos y el hold-to-type con `time.monotonic()`, así que el reconocimiento no cambia con los FPS.
+
+### 8.10 Pruebas automáticas
+
+| Batería | Resultado |
+|---|---|
+| **28 pruebas de lógica**: hold-to-type por mano, misma letra con ambas manos, bloqueo tras un trazo, seguidor de manos (duplicados, parpadeo, corrección, orden), espejo canónico, One-Euro (temblor y retraso), voz, guiones bajos, coherencia de vaivenes | **28 de 28** |
+| Dibujo de las dos ventanas con 520 fotogramas reales de dos manos y rostro (con y sin diagnóstico) | sin errores |
+| Reproducción completa de las 9 sesiones con el `Traductor` real | resultados de las secciones 8.2-8.8 |
+| `main.py` en vivo con la cámara (sección 8.9) | ventanas, teclas `N`, `D`, `Espacio`, `Backspace`, envíos al hardware y cierre limpio |
 
 ---
 
@@ -693,13 +821,15 @@ Con el detector **nuevo** sobre la grabación real: **2 de 2 preguntas** detecta
 
 | Limitación | Detalle | Mitigación |
 |---|---|---|
-| **K con falsos positivos** | Un vaivén de una mano con dos dedos arriba es justo lo que define a la K. En 103 s de escritura estática hubo **una K falsa**: se sacudía la mano mientras se formaba la R. Un barrido de un solo trazo era **indistinguible** de acomodar la mano (se comparó ventana por ventana) | K exige un vaivén (≥ 2 cambios de sentido). Evitar agitar la mano al escribir U, R o P |
-| **F, R, U, P y C poco fiables** | Los dedos cruzados o en círculo ocluyen puntos y MediaPipe confunde las puntas | Ver sección 8.2; candidatas a un clasificador entrenado |
-| **Q y X casi iguales** | Misma mano (índice curvo, resto cerrado); solo la dirección del índice las separa | Regla por dirección del índice (Q ≥ 120°); baja confianza |
-| **S y T casi iguales** | En 2D el pulgar queda sobre el nudillo del índice en ambas | Se separan por la distancia del pulgar (0.20), calibrada con una sola mano |
-| **Vista 2D** | No se usa la coordenada `z` | Posible mejora |
-| **Una sola persona** | Umbrales calibrados con una sola mano | Repetir las sesiones con más personas |
-| **Trazos pequeños** | Si la mano sale del cuadro, la cámara la pierde | Dibujar del tamaño de la mano |
+| **P y R** | En la lámina ambas cruzan índice y medio; entre sesiones se hicieron de forma distinta (en la prueba quedaron intercambiadas en la izquierda) | Hacerlas siempre igual: R con las puntas entrelazadas, P con el medio cruzando por delante. Candidatas a un clasificador entrenado |
+| **D / X y la Q** | La X se separa de la D por la inclinación de la palma y del índice; si la palma queda vertical, se lee D | Inclinar la palma al hacer la X |
+| **ESPACIO y mano relajada** | Se separan por cuánto se abre el pulgar; si se abre poco, es mano relajada y no escribe | Abrir bien el pulgar |
+| **Trazos con movimiento muy rápido** | MediaPipe puede perder la mano (pasó con BORRAR y dos manos) | Trazos del tamaño de la mano y a ritmo moderado |
+| **Dos manos delante de la cara** | MediaPipe dejó de detectarlas | Manos a la altura del pecho, separadas |
+| **Asentir** | Un "sí" pequeño (±5°) se parece al movimiento natural de la cabeza; quedaron 3 asentimientos falsos en 19.4 min | Asentir de forma marcada; tres cabeceos |
+| **Preguntas falsas con las cejas al hacer letras** | Al mirar la mano o la pantalla, las cejas suben de verdad más de 10 % sin mover la cabeza: 8 `?` falsos en 19.4 min (la versión anterior, 21) | Mirar a la cámara; `Backspace` o negar con la cabeza borran el `?`. Seguir la mirada con los puntos del iris (`refine_landmarks`) es una mejora posible |
+| **FPS con dos manos** | `max_num_hands=2` duplica el tiempo de MediaPipe Hands mientras solo hay una mano a la vista; en batería, 17 FPS | Conectar la laptop; `MAX_MANOS = 1` o `PROCESAR_ROSTRO_CADA = 2` en una PC lenta |
+| **Una sola persona** | Todos los umbrales se calibraron con la mano y la cara del autor | Repetir las sesiones guiadas con más personas |
 | **CH, LL y RR** | No incluidas | Roadmap |
 | **Fuentes de OpenCV** | No dibujan acentos; la Ñ se compone a mano | Texto sin acentos en pantalla y Ñ propia |
 | **Voz del sistema** | Requiere una voz SAPI5 en español | Si falta, el programa sigue sin voz |
@@ -710,17 +840,24 @@ Con el detector **nuevo** sobre la grabación real: **2 de 2 preguntas** detecta
 
 | Decisión | Evidencia |
 |---|---|
-| **Umbral de cejas 1.07 y no 1.15** | Una subida real da +10-17 %; con 1.15 solo el 29-37 % de los fotogramas lo superaba |
-| **Cejas medidas en la comisura, proyectadas y entre el alto de rostro** | Es la métrica con menos ruido (1.5 %) y la única que no se mueve con la cabeza (≤ 7 % frente a 20 %); la del párpado tiene 2.7× más ruido |
-| **Pulgar "abierto" por distancia, no por rectitud** | El pulgar parpadea entre recto y doblado (la G caía en X en el 29 % de los fotogramas); la distancia es estable |
-| **Mano relajada sin letra (B < 20°, ESPACIO ≥ 48°)** | Una mano abierta relajada mide ≈ 40° y con el umbral de 35° caía en B |
-| **U: puntas casi juntas, R: puntas cruzadas** | En la U las puntas quedan a +0.07 y en la R a −0.11; la regla "puntas casi juntas = R" convertía las U en R |
-| **Buffer de 45 fotogramas y ventana por gesto** | Una Z a ritmo natural dura 1.4-2 s; en 20 fotogramas no cabe |
-| **Q y X separadas por la dirección del índice** | Q 135-177° frente a X 23-113° en dos sesiones distintas; la apertura del pulgar y la orientación de la palma confundían |
+| **Rasgos 3D en un marco propio de la mano** | Separan los pares confundibles con un solo umbral en datos de ambas manos (p. ej. S/T, S/A, E/S, R/U al 100 % en calibración); la versión 2D quedaba en 69-78 % por letra con datos nuevos |
+| **Extensión 3D en lugar de la suma de ángulos para "dedo recto"** | En la G izquierda de lado, el anular cerrado medía "recto" por ángulos (desde 56°) y 0.72-0.98 por extensión |
+| **Pulgar medido contra las falanges del índice y el medio** | T: punta del pulgar +0.03 a +0.23 sobre los PIP; S: −0.40 a −0.03 |
+| **Dedo recto por ángulos articulares, no solo por extensión** | La N con el índice a 1.39 tiene 51° de flexión (recto) y la E a 1.39 tiene 95° (doblado); la derecha subió de 85.6 % a 93.0 % en la sesión 9 |
+| **"Pistola" con el índice largo aunque doblado** | La G izquierda de la sesión 9 tenía el índice a 1.71 con ~96° de flexión; la A siempre tiene el índice metido (≤ 1.21) |
+| **Prueba de espejo** | 8 336 de 8 336 fotogramas reales clasificados igual al reflejarlos como la otra mano |
+| **Ventanas de trazo en segundos** | A 17 FPS una ventana de 45 fotogramas dura 2.8 s; con segundos, BORRAR izquierda pasó de fallar a funcionar en la prueba |
+| **Configuración dominante en la ventana, no la del último frame** | La Z izquierda tenía una Z perfecta, pero el último frame se leía como X |
+| **Movimiento coherente en vaivenes** | La única K falsa en dos manos tenía rectitud 0.34 y tramos desiguales (3.8×) |
+| **Ñ con amplitud 0.07** | La Ñ suave real oscila 0.08-0.13; sostener la N tiembla < 0.05 y no dio Ñ falsas |
+| **D/X por la inclinación de la palma** | Al dibujar Z o `?` el índice se ladea hasta 90° pero la palma sigue en 16-50°; la X real tiene la palma a 52-61° |
+| **One-Euro por mano** | 22 de 22 escritas con filtro frente a 21 de 22 sin él, y sin trazos falsos por temblor |
+| **Seguimiento de manos por continuidad** | MediaPipe repitió la misma mano y la etiqueta parpadeó en C y F |
+| **Misma letra con ambas manos = una letra** | En la sesión 5 se hicieron A, B, L y V con ambas manos y se escribían dos veces |
+| **Asentir con 5° y tres cabeceos** | Con 5° y dos, 24 asentimientos falsos; con tres, 4; con 6° no se detectaba el "sí" real |
+| **Cara tapada por error de reproyección > 1.8 %** | Cara visible 0.8-1.4 %; manos encima 1.7-3.8 % |
+| **Más de 4 s con cejas arriba = nueva cara neutra** | Una sesión mantuvo la razón en ~1.11 durante 50 s y producía preguntas repetidas |
 | **BORRAR como barrido de mano abierta** | El puño es S, T o A; borrar con un puño borraría letras al escribirlas |
-| **Velocidad de "mano quieta" 1.2 manos/s** | Sostener una seña produce 0.5-1.1 de temblor natural; con 0.9 se rompía la retención |
-| **Pausa tras un vaivén** | Sin ella, agitar seguido escribía una Q cada ≈ 1.1 s |
-| **K como vaivén y no como barrido** | Los falsos positivos eran barridos únicos |
 
 ---
 
@@ -735,7 +872,7 @@ Proyecto/
 │   └── settings.json     # Intérprete del proyecto y perfil de PowerShell
 ├── venv/                 # Entorno virtual (ignorado por Git)
 ├── .gitignore
-├── main.py               # Código fuente del sistema (10 secciones)
+├── main.py               # Código fuente del sistema (11 secciones)
 ├── README.md             # Resumen e inicio rápido
 └── DOCUMENTACION.md      # Este documento
 ```
@@ -744,24 +881,27 @@ Proyecto/
 
 | Sección | Elementos |
 |---|---|
-| **1. Configuración** | constantes, `GUIA` del alfabeto, estados faciales |
+| **1. Configuración** | constantes (con el rango medido que justifica cada umbral), `GUIA` del alfabeto, estados faciales |
 | **2. Texto y voz** | `limpiar_texto`, `nombre_hablado`, `ultima_palabra`, `_a_ascii` |
-| **3. Geometría** | `dist`, `angulo`, `angulo_entre`, `a_pixeles`, `restar`, `unitario` |
-| **4. Manos (rasgos)** | `escala_mano`, `RasgosMano`, `analizar_mano`, `angulo_dedos` |
-| **5. Clasificación** | `clasificar_pose`, `decidir_q_o_x`, `Trayectoria`, `simplificar_rdp`, `segmentos`, `_trazo_j`, `_trazo_z`, `_trazo_interrogacion`, `_vaiven`, `_trazo_borrar`, `contar_reversos`, `pico_velocidad`, `ReconocedorDinamico` |
-| **6. Rostro** | `calcular_rasgos_faciales`, `DetectorOscilacion`, `AnalizadorFacial` |
-| **7. Escritura** | `Estabilizador`, `Escritor`, `ProgresoSuave` |
-| **8. Voz y hardware** | `VozAsincrona`, `PoliticaVoz`, `_elegir_voz`, `enviar_a_hardware` |
-| **9. Interfaz** | `EstadoUI`, `poner_texto` (con Ñ), `dibujar_camara`, `dibujar_panel` (fondo en caché), `medidor_cejas`, `dibujar_estela`, `colocar_ventanas` |
-| **10. Principal** | `detectar_mano`, `detectar_rostro`, `main` |
+| **3. Geometría y filtro** | `dist`, `unitario3`, `angulo3`, `angulo_vectores`, `desde_arriba`, `FiltroOneEuro` |
+| **4. Manos (rasgos 3D)** | `a_canonica` (espejo), `escala_mano`, `RasgosMano`, `analizar_mano` |
+| **5. Clasificación** | `clasificar_pose`, `decidir_q_o_x`, `Trayectoria`, `simplificar_rdp`, `segmentos`, `_trazo_j`, `_trazo_z`, `_trazo_interrogacion`, `puntos_de_giro`, `rectitud`, `_vaiven`, `_trazo_borrar`, `ReconocedorDinamico` |
+| **6. Dos manos** | `DeteccionMano`, `leer_manos`, `SeguidorManos`, `EstadoMano`, `CanalMano` |
+| **7. Rostro** | `EstimadorPoseCabeza` (`solvePnP`), `PoseCabeza`, `altura_cejas`, `cejas_esperadas`, `calcular_rasgos_faciales`, `DetectorOscilacion`, `AnalizadorFacial` |
+| **8. Escritura y orquestación** | `Estabilizador`, `SostenerMano`, `Escritor`, `ProgresoSuave`, `Traductor` |
+| **9. Voz y hardware** | `VozAsincrona`, `PoliticaVoz`, `_elegir_voz`, `enviar_a_hardware` |
+| **10. Interfaz** | `VistaMano`, `EstadoUI`, `vista_mano`, `mano_principal`, `poner_texto` (con Ñ), `dibujar_mano`, `dibujar_camara`, `dibujar_panel`, `medidor_cejas`, `dibujar_estela` |
+| **11. Principal** | `detectar_manos`, `detectar_rostro`, `main` |
 
 ### 11.3 Referencias
 
 - SEP y Aprende.mx. *Abecedario en Lengua de Señas Mexicana* (lámina). https://nuevaescuelamexicana.sep.gob.mx/contenido/recurso/abecedario-en-lengua-de-senas-mexicana/
 - Zhang, F. et al. (2020). *MediaPipe Hands: On-device Real-time Hand Tracking*. arXiv:2006.10214.
 - Kartynnik, Y. et al. (2019). *Real-time Facial Surface Geometry from Monocular Video on Mobile GPUs* (MediaPipe Face Mesh). arXiv:1907.06724.
+- MediaPipe. *Canonical face model* (`mediapipe/modules/face_geometry/data/canonical_face_model.obj`). https://github.com/google-ai-edge/mediapipe
+- Casiez, G., Roussel, N. y Vogel, D. (2012). *1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems*. CHI 2012.
+- OpenCV. *Perspective-n-Point (PnP) pose computation* (`cv2.solvePnP`). https://docs.opencv.org/4.x/d5/d1f/calib3d_solvePnP.html
 - Ramer, U. (1972). *An iterative procedure for the polygonal approximation of plane curves*. Computer Graphics and Image Processing, 1(3).
 - Hochreiter, S. y Schmidhuber, J. (1997). *Long Short-Term Memory*. Neural Computation, 9(8).
 - Documentación de MediaPipe Solutions: https://ai.google.dev/edge/mediapipe/solutions/guide
-- Documentación de OpenCV: https://docs.opencv.org/4.x/
 - Documentación de pyttsx3: https://pyttsx3.readthedocs.io/
