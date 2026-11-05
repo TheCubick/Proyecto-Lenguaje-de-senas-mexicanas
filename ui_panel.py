@@ -1,0 +1,193 @@
+"""Capa de presentación de la interfaz web: qué se muestra de cada mano, los puntos de las manos sobre el video
+(sin textos ni recuadros) y el estado JSON que consume static/app.js. No dibuja paneles: eso lo hace el navegador."""
+from dataclasses import dataclass
+from typing import Optional
+
+import cv2
+import mediapipe as mp
+
+from classifier_face import AFIRM_AMPLITUD, CEJAS_UMBRAL, NEG_AMPLITUD
+from classifier_hands import GESTOS_DINAMICOS, LADOS, LETRAS_TIPEABLES, POSES_SILENCIOSAS, PUNTO_DE_POSE
+from traductor import SEGUNDOS_PARA_ESCRIBIR
+from voice_engine import limpiar_texto
+
+CONEXIONES_MANO = tuple(mp.solutions.hands.HAND_CONNECTIONS)
+PUNTAS = (4, 8, 12, 16, 20)
+
+DURACION_DESTELLO = 1.2        # Segundos que se muestra en grande una seña con movimiento recién registrada
+CALIDAD_JPEG = 80              # 640x480 a calidad 80: ~35 KB por frame, ~3 ms de codificación
+
+# Colores del esqueleto (BGR). Iguales a --izq / --der de static/estilos.css
+COLOR_LADO = {"Izq": (255, 140, 79), "Der": (166, 230, 46)}    # azul eléctrico / verde neón
+COLOR_HUESOS = (250, 246, 240)
+OPACIDAD_HUESOS = 0.45
+
+# Alfabeto: (clave, cómo se hace, movimiento). Lámina oficial SEP
+GUIA = [
+    ("A", "Puño, pulgar estirado al lado", None),
+    ("B", "4 dedos juntos, pulgar cruzado", None),
+    ("C", "Mano curva en forma de C", None),
+    ("D", "Índice arriba, otros cerrados", None),
+    ("E", "Dedos doblados sobre el pulgar", None),
+    ("F", "Índice y pulgar unidos, 3 dedos arriba", None),
+    ("G", "Pistola: índice de lado", None),
+    ("H", "Pistola: índice y medio de lado", None),
+    ("I", "Solo el meñique arriba", None),
+    ("J", "I + gancho (baja y curva)", "Mueve el meñique: baja y haz un gancho"),
+    ("K", "P + agitar de lado a lado", "Agita la mano (grande) de lado a lado"),
+    ("L", "Índice arriba y pulgar al lado", None),
+    ("M", "3 dedos hacia abajo", None),
+    ("N", "2 dedos hacia abajo", None),
+    ("Ñ", "N + vaivén de lado a lado", "Agita la N de lado a lado"),
+    ("O", "Círculo índice-pulgar", None),
+    ("P", "Índice y medio cruzados en X", None),
+    ("Q", "Pinza abajo + balanceo lateral", "Balancea la pinza de lado a lado"),
+    ("R", "Índice y medio entrelazados", None),
+    ("S", "Puño, pulgar sobre los dedos", None),
+    ("T", "Puño, pulgar entre los dedos", None),
+    ("U", "Índice y medio juntos", None),
+    ("V", "Índice y medio en V", None),
+    ("W", "Índice, medio y anular abiertos", None),
+    ("X", "Índice de lado + vaivén", "Mueve el índice de lado a lado"),
+    ("Y", "Pulgar y meñique estirados", None),
+    ("Z", "D + trazo de Z en el aire", "Dibuja una Z en el aire con el índice"),
+    ("ESPACIO", "Mano abierta, 5 dedos", None),
+    ("BORRAR", "Mano abierta barre al centro", "Barre la mano abierta hacia el centro del cuerpo"),
+    ("?", "Índice dibuja ? en el aire", "Dibuja un ? en el aire con el índice"),
+]
+
+# Pistas para las configuraciones que sirven de base a un trazo
+PISTA_TRAZO = {"I": "o traza una J", "Y": "o traza una J", "D": "o traza Z / ?", "P": "o agita para K",
+               "R": "o agita para K", "U": "o agita para K", "N": "o agita para Ñ", "Q": "balancea para Q",
+               "X": "mueve para X", "B": "o barre al centro", "ESPACIO": "o barre al centro"}
+
+
+@dataclass
+class VistaMano:
+    """Cómo se muestra una mano: seña visible, estado ("sostener", "mover", "registrada", "pose") y progreso."""
+    sena: Optional[str]
+    estado: str
+    progreso: float
+
+
+def vista_mano(em, sostener, ahora):
+    """Qué se muestra de una mano: el trazo recién hecho, la seña que se sostiene, o nada."""
+    gesto, t_gesto = sostener.destello
+    if gesto and ahora - t_gesto < DURACION_DESTELLO:
+        return VistaMano(gesto, "registrada", 1.0)
+    if em.pose is not None and em.rasgos is not None and em.pose not in POSES_SILENCIOSAS:
+        if em.pose not in LETRAS_TIPEABLES:
+            return VistaMano(em.pose, "pose", em.progreso)
+        if em.moviendo:
+            return VistaMano(em.pose, "mover", em.progreso)
+        return VistaMano(em.pose, "registrada" if sostener.registrada else "sostener", em.progreso)
+    return VistaMano(None, "ninguna", 0.0)
+
+
+def mano_principal(vistas, anterior):
+    """La mano que se muestra en grande: la que acaba de registrar o la que más avanzó; en empate, la anterior."""
+    candidatas = [lado for lado in LADOS if vistas[lado].sena is not None]
+    if not candidatas:
+        return None
+    return max(candidatas, key=lambda lado: (vistas[lado].estado == "registrada", vistas[lado].progreso,
+                                             lado == anterior))
+
+
+# --- Video: solo los puntos de las manos ------------------------------------------
+def _pt(p):
+    return int(p[0]), int(p[1])
+
+
+def dibujar_estela(frame, tray, punto, color):
+    """Recorrido reciente del punto rastreado (se ve cómo se traza la J, la Z, el ?...): fino y tenue al inicio."""
+    pts = tray.serie_px(punto)
+    for i in range(1, len(pts)):
+        k = i / len(pts)
+        tono = tuple(int(c * k + 40 * (1 - k)) for c in color)
+        cv2.line(frame, _pt(pts[i - 1]), _pt(pts[i]), tono, 1 + int(3 * k), cv2.LINE_AA)
+
+
+def dibujar_manos(frame, manos, vistas, canales):
+    """Esqueleto translúcido y articulaciones en el color de cada mano. Sin textos: las etiquetas son HTML."""
+    visibles = [lado for lado in LADOS if manos[lado].rasgos is not None]
+    if not visibles:
+        return
+    capa = frame.copy()
+    for lado in visibles:
+        p = manos[lado].rasgos.p
+        for a, b in CONEXIONES_MANO:
+            cv2.line(capa, _pt(p[a]), _pt(p[b]), COLOR_HUESOS, 2, cv2.LINE_AA)
+    cv2.addWeighted(capa, OPACIDAD_HUESOS, frame, 1 - OPACIDAD_HUESOS, 0, frame)
+    for lado in visibles:
+        p, color = manos[lado].rasgos.p, COLOR_LADO[lado]
+        for k, q in enumerate(p):
+            if k in PUNTAS:
+                cv2.circle(frame, _pt(q), 7, color, 1, cv2.LINE_AA)   # halo en las yemas
+            cv2.circle(frame, _pt(q), 4 if k in PUNTAS else 3, color, -1, cv2.LINE_AA)
+        sena = vistas[lado].sena
+        if sena in PUNTO_DE_POSE and canales[lado].tray.vel > 0.6:   # estela solo mientras la mano se mueve
+            dibujar_estela(frame, canales[lado].tray, PUNTO_DE_POSE[sena], color)
+
+
+# --- Estado para el navegador -----------------------------------------------------
+def config_web():
+    """Lo que no cambia (se manda una vez al conectar): guía del alfabeto, umbral de las cejas, segundos del
+    hold-to-type y, para el Modo Práctica, la configuración base de cada seña con movimiento (J <- I/Y...)."""
+    bases = {}
+    for gesto, poses, *_ in GESTOS_DINAMICOS:
+        for g in (sorted(poses) if gesto == "QX" else [gesto]):      # Q y X comparten trazo; base = sí mismas
+            bases.setdefault(g, set()).update({g} if gesto == "QX" else poses - POSES_SILENCIOSAS)
+    return {"tipo": "config", "umbral_cejas": CEJAS_UMBRAL, "segundos": SEGUNDOS_PARA_ESCRIBIR,
+            "bases": {g: sorted(p) for g, p in bases.items()},
+            "guia": [{"clave": c, "desc": d, "mov": m} for c, d, m in GUIA]}
+
+
+def _mano_web(em, vista, ancho, alto):
+    caja = None
+    if em.rasgos is not None:
+        p = em.rasgos.p
+        caja = [round(float(p[:, 0].min()) / ancho, 4), round(float(p[:, 1].min()) / alto, 4),
+                round(float(p[:, 0].max()) / ancho, 4), round(float(p[:, 1].max()) / alto, 4)]
+    pista = PISTA_TRAZO.get(vista.sena) if vista.estado in ("sostener", "registrada", "mover", "pose") else None
+    return {"sena": vista.sena, "estado": vista.estado, "progreso": round(vista.progreso * 100, 1),
+            "caja": caja, "pista": pista}
+
+
+def lineas_diagnostico(manos, canales, analizador):
+    """Rasgos 3D de cada mano y del rostro (tecla D)."""
+    lineas = []
+    for lado in LADOS:
+        r = manos[lado].rasgos
+        if r is None:
+            continue
+        lineas.append(f"{lado}: " + " ".join(f"{e}{x:.2f}" for e, x in zip(r.estados, r.extension)))
+        lineas.append("  flex " + " ".join(f"{f:.0f}" for f in r.flexion) + f"  orient={r.orient:.0f}"
+                      f" dirInd={r.dir_indice:.0f}")
+        lineas.append(f"  pulgar lat={r.pulgar_lat:+.2f} alt={r.pulgar_alt:+.2f} dTI={r.d_ti:.2f}"
+                      f" normalZ={r.normal[2]:+.2f}")
+        lineas.append(f"  cruce={r.cruce:+.2f} angIM={r.ang_im:.0f} prof={r.prof_medio:+.2f}"
+                      f" vel={canales[lado].tray.vel:.1f}")
+    if analizador.pose_actual is not None:
+        lineas.append(f"Yaw {analizador.negacion.desviacion:+.1f} (+-{NEG_AMPLITUD:.0f})  Pitch "
+                      f"{analizador.afirmacion.desviacion:+.1f} (+-{AFIRM_AMPLITUD:.0f})  "
+                      f"{analizador.pose_actual.distancia:.0f} cm  ojos x{analizador.ratio_ojos:.2f}")
+    return lineas
+
+
+def estado_web(traductor, manos, vistas, principal, progreso, fps, voz, tamano, diagnostico):
+    """Todo lo que la interfaz necesita en un frame. Progresos en 0-100."""
+    ancho, alto = tamano
+    vp = vistas[principal] if principal else VistaMano(None, "ninguna", 0.0)
+    an = traductor.analizador
+    pose = an.pose_actual
+    return {
+        "tipo": "estado",
+        "sena": vp.sena, "estado": vp.estado, "progreso": round(progreso * 100, 1), "lado": principal,
+        "manos": {lado: _mano_web(manos[lado], vistas[lado], ancho, alto) for lado in LADOS},
+        "texto": limpiar_texto(traductor.escritor.texto),
+        "rostro": {"modo": an.modo, "pregunta": round(an.progreso_pregunta * 100),
+                   "calibracion": round(an.progreso_calibracion * 100), "cejas": round(an.ratio_cejas, 3),
+                   "cabeza": None if pose is None else [round(pose.pitch), round(pose.yaw), round(pose.roll)]},
+        "voz": voz, "fps": round(fps, 1), "tamano": [ancho, alto],
+        "diagnostico": lineas_diagnostico(manos, traductor.canales, an) if diagnostico else None,
+    }

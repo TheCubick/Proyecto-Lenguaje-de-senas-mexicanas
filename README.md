@@ -1,17 +1,118 @@
-# Proyecto-Lenguaje-de-se-a
+# Proyecto Lenguaje de señas mexicanas
 
 ## Sistema Inteligente de Traducción de Lengua de Señas Mexicana (LSM): dos manos, rostro y voz
 
-Proyecto de la materia Inteligencia Artificial. Con una cámara web reconoce en tiempo real el **alfabeto de la Lengua de Señas Mexicana** hecho con **cualquiera de las dos manos, o con ambas a la vez**, lo convierte en texto y lo **dice en voz alta**. Usa MediaPipe (manos y rostro), OpenCV y `pyttsx3`.
+Proyecto de la materia Inteligencia Artificial. Reconoce en tiempo real, con una cámara web, el **alfabeto de la Lengua de Señas Mexicana** hecho con **cualquiera de las dos manos o con ambas a la vez**. Lo convierte en texto, lo **dice en voz alta** y lo muestra en una **interfaz web** con tema claro y oscuro y un **Modo Práctica** para aprender las señas.
 
-- **Letras estáticas:** se escriben **sosteniendo la mano quieta 1.5 s**; cada mano tiene su propia barra de progreso.
+| Capa | Tecnología |
+|---|---|
+| Visión e inferencia | MediaPipe Hands y Face Mesh, OpenCV (`solvePnP`), NumPy |
+| Voz | `pyttsx3` (SAPI5 de Windows) en un hilo propio |
+| Servidor | FastAPI + uvicorn, WebSocket local |
+| Interfaz | HTML, CSS y JavaScript sin dependencias |
+
+## Características
+
+- **Letras estáticas:** se escriben **sosteniendo la mano quieta 1.5 s**; cada mano tiene su propio progreso.
 - **Letras con movimiento (J, K, Ñ, Q, X, Z):** se registran al completar el trazo.
-- **Dos manos:** la cámara etiqueta cada una (`Izq: B | Der: O`) y cada una tiene su propio filtro, trayectoria y barra; si haces la misma letra con las dos, se escribe una sola vez.
-- **Geometría 3D:** ángulos de las articulaciones, normal de la palma y un marco propio de cada mano; la mano izquierda se refleja para que las mismas reglas valgan para ambas.
-- **Rostro:** pose real de la cabeza en grados (`solvePnP`); las cejas levantadas agregan `?`, negar con la cabeza borra y asentir confirma la palabra.
-- **Voz:** dice cada letra al registrarla y lee la palabra completa al confirmar o tras 4 s sin escribir.
+- **Dos manos:** cada una tiene su propio filtro, trayectoria y progreso, y su etiqueta sobre el video (`Izq · B`, `Der · O`). La misma letra hecha con las dos se escribe una sola vez.
+- **Geometría 3D:** ángulos de las articulaciones, normal de la palma y un marco propio de cada mano. La mano izquierda se refleja para que las mismas reglas valgan para ambas.
+- **Rostro:** pose real de la cabeza en grados (`solvePnP`). Las cejas levantadas agregan `?`, negar con la cabeza borra y asentir confirma la palabra.
+- **Voz:** dice cada letra al registrarla y lee la palabra completa al confirmarla o tras 4 s sin escribir.
+- **Interfaz web:**
+  - anillo de progreso que cambia de color (azul → ámbar → verde);
+  - subtítulos centrados bajo el video;
+  - guía del alfabeto;
+  - tema claro/oscuro que se recuerda.
+- **Modo Práctica:** eliges una letra o una palabra, ves la tarjeta de referencia y recibes retroalimentación en vivo. Al acertar, la tarjeta gira, sale confeti y el borde de la cámara se ilumina; se lleva un marcador de aciertos y rachas.
 
 Para repetir la misma letra, cambia de seña o baja la mano y vuelve a hacerla.
+
+## Inicio rápido
+
+Requisitos: **Windows 10/11**, **Python 3.12** (MediaPipe 0.10.18 no es compatible con 3.13), una cámara web y un navegador reciente (Chrome, Edge o Firefox).
+
+```powershell
+# 1. Clonar el repositorio
+git clone https://github.com/TheCubick/Proyecto-Lenguaje-de-se-a.git
+cd Proyecto-Lenguaje-de-se-a
+
+# 2. Crear el entorno virtual
+py -3.12 -m venv venv
+
+# 3. Instalar dependencias
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install opencv-python mediapipe==0.10.18 numpy pyttsx3 fastapi uvicorn websockets
+
+# 4. Ejecutar
+.\venv\Scripts\python.exe server.py
+```
+
+Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el **navegador predeterminado se abre solo** en esa dirección. Si no se abre, escríbela a mano. Para terminar, pulsa **Detener** dos veces en la interfaz o **Ctrl+C** en la terminal.
+
+**Con VS Code:** abre la carpeta y pulsa **F5** ("Traductor LSM (server.py)"). `.vscode/launch.json` ya usa el Python de `venv`.
+
+> La voz usa las voces SAPI5 de Windows (por ejemplo *Microsoft Sabina*, español de México). Si no hay ninguna en español, el programa funciona igual y el encabezado muestra **Sin voz**.
+
+## Arquitectura
+
+```
+ Cámara ─▶ HILO DE CAPTURA (main.py)                  SERVIDOR (server.py)              NAVEGADOR (static/)
+           MediaPipe manos + rostro                   FastAPI · 127.0.0.1:5000
+           Traductor.paso() → texto                   WebSocket /ws
+           voz · hardware              ──Difusor──▶   binario: JPEG          ──────▶   video en <canvas>
+           esqueleto → JPEG                           texto: JSON del estado ──────▶   anillo, manos, rostro,
+           estado → JSON               ◀──cola────    {"accion": ...}        ◀──────   subtítulos, Práctica
+```
+
+- **El backend hace todo el reconocimiento.** El navegador solo presenta el estado y manda acciones (Espacio, Borrar, Limpiar, Diagnóstico, Recalibrar, Detener).
+- **Latencia acotada:** el servidor guarda solo el último fotograma; si el navegador va lento, se salta fotogramas en lugar de acumular retraso.
+- **Privado:** el servidor solo escucha en `127.0.0.1` y no guarda ningún fotograma.
+- **Desempeño medido:** 30 FPS recibidos en el navegador, unos 11 KB por fotograma.
+
+El protocolo, el modelo de hilos y las decisiones de diseño están en la [documentación técnica](DOCUMENTACION.md#25-arquitectura-cliente-servidor).
+
+## Interfaz
+
+| Zona | Contenido |
+|---|---|
+| **Encabezado** | Estado de la voz, interruptor de tema (sol/luna), guía del alfabeto, botón Detener |
+| **Cámara** | Video en espejo con el esqueleto de cada mano (azul la izquierda, verde la derecha), etiqueta flotante por mano, estela del dedo al trazar y barra de herramientas |
+| **Subtítulos** | Texto acumulado centrado bajo el video; la última letra entra con una animación breve |
+| **Traducir** | La seña en grande dentro del anillo de progreso, qué mano la hace y cómo se hace |
+| **Práctica** | Selector de letras o palabras, tarjeta de referencia, retroalimentación en vivo y marcador |
+| **Manos y rostro** | Tarjeta por mano; estado facial con icono, medidor de cejas y ángulos de la cabeza |
+
+El anillo de progreso cambia de color según cuánto falta para registrar la seña:
+
+| Progreso | Color |
+|---|---|
+| 0-49 % | Azul claro |
+| 50-99 % | Ámbar ("procesando") |
+| 100 % | Verde, con pulso y brillo |
+
+## Modo Práctica
+
+1. Abre la pestaña **Práctica** del panel derecho. También puedes tocar una letra en la guía (`G`).
+2. Elige **Letras**: cualquiera de las 30 señas, con flechas o al azar. O elige **Palabras**: una sugerida o la que escribas, para deletrearla.
+3. Haz la seña frente a la cámara. La retroalimentación te dice si es la correcta, si ya tienes la base de una seña con movimiento (*"Bien, I es la base: ahora haz el movimiento"*) o qué seña está detectando.
+4. Al registrarse la seña correcta, la tarjeta gira, sale confeti y suben los aciertos y la racha. Si registras otra letra, la racha vuelve a cero.
+
+> Lo que aciertas en práctica también se escribe en los subtítulos; usa **Limpiar** al terminar.
+
+## Teclado
+
+| Tecla | Acción |
+|---|---|
+| `Espacio` | Agregar espacio |
+| `Backspace` | Borrar la última letra |
+| `C` | Limpiar todo el texto |
+| `D` | Mostrar u ocultar el diagnóstico (estado 3D de cada dedo y ángulos de la cabeza) |
+| `N` (o `R`) | Recalibrar la cara neutra |
+| `G` | Abrir o cerrar la guía del alfabeto (`Esc` la cierra) |
+| `T` | Cambiar entre tema claro y oscuro |
+
+Los atajos funcionan con la pestaña del navegador activa; no se activan mientras escribes una palabra de práctica.
 
 ## Alfabeto (según la lámina oficial de la SEP)
 
@@ -62,7 +163,7 @@ Para repetir la misma letra, cambia de seña o baja la mano y vuelve a hacerla.
 
 ## Gestos del rostro (MediaPipe Face Mesh + `cv2.solvePnP`)
 
-Al iniciar, mantén la cara neutra un momento mientras el sistema calibra (`Modo: Calibrando...`); la tecla **`N`** vuelve a calibrar. En la ventana de cámara hay un **medidor de cejas** (`CEJAS x1.11`) y debajo los **ángulos de la cabeza** (`P` pitch, `Y` yaw, `R` roll, en grados).
+Al iniciar, mantén la cara neutra un momento mientras el sistema calibra (la tarjeta *Rostro* muestra **Calibrando**); la tecla **`N`** vuelve a calibrar. La tarjeta incluye un **medidor de cejas** con la marca del umbral y los **ángulos de la cabeza** (cabeceo, giro e inclinación, en grados).
 
 | Gesto | Efecto |
 |---|---|
@@ -70,47 +171,11 @@ Al iniciar, mantén la cara neutra un momento mientras el sistema calibra (`Modo
 | **Negar con la cabeza** (izquierda-derecha-izquierda, ≥ 8°) | Borra la última letra |
 | **Asentir con la cabeza** (tres cabeceos, ≥ 5°) | Confirma la palabra (agrega un espacio) y la lee en voz alta |
 
-Si una mano tapa la cara, el indicador muestra `Cara tapada` y no se interpreta ningún gesto facial.
+Si una mano tapa la cara, la tarjeta muestra **Cara tapada** y no se interpreta ningún gesto facial.
 
 ## Voz
 
-Un hilo aparte (`pyttsx3`, con una voz en español) habla **sin congelar la cámara**. Dice el nombre de cada letra (`jota`, `eñe`, `doble ve`…) y lee la palabra completa al asentir o tras 4 s sin escribir. Si no hay voz en español instalada o falta `pyttsx3`, el programa funciona igual y el panel indica `Voz: no disponible`.
-
-## Interfaz
-
-- **Camara IA - Deteccion LSM:** video en espejo con cada mano (puntos azules la izquierda, verdes la derecha), su recuadro, la etiqueta `Izq: B` / `Der: O` con su mini barra, la estela del dedo al dibujar, el resumen `Izq: B | Der: O`, el medidor de cejas con la pose de la cabeza, el `Modo:` facial y la barra de la mano principal.
-- **Panel Traductor LSM:** la seña en grande (con `MANO IZQ` o `MANO DER`), cómo se hace, la **guía del alfabeto** (en naranja las que llevan movimiento), el texto acumulado y el estado de la voz. Los espacios se ven como espacios.
-
-## Teclas
-
-| Tecla | Acción |
-|---|---|
-| `Espacio` | Agregar espacio |
-| `Backspace` | Borrar la última letra |
-| `C` | Limpiar todo el texto |
-| `D` | Mostrar u ocultar el diagnóstico (estado 3D de cada dedo de cada mano y ángulos de la cabeza) |
-| `N` (o `R`) | Recalibrar la cara neutra |
-| `ESC` o la `X` de una ventana | Salir |
-
-## Cómo ejecutar
-
-1. Abre la carpeta del proyecto en VS Code.
-2. Pulsa **F5** (o el botón en *Ejecutar y depurar* → "Traductor LSM (main.py)").
-
-`.vscode/launch.json` ya usa el Python de `venv`. También puedes ejecutarlo desde la terminal:
-
-```powershell
-.\venv\Scripts\python.exe main.py
-```
-
-### Crear el entorno desde cero
-
-```powershell
-py -3.12 -m venv venv
-.\venv\Scripts\python.exe -m pip install opencv-python mediapipe==0.10.18 numpy pyttsx3
-```
-
-> MediaPipe 0.10.18 requiere Python 3.12 (no es compatible con 3.13). La voz usa las voces SAPI5 de Windows (por ejemplo *Microsoft Sabina*, español de México). Esta versión **no agrega dependencias**: el filtro One-Euro está escrito en `main.py` y la pose de la cabeza usa `cv2.solvePnP`.
+Un hilo aparte (`pyttsx3`, con una voz en español) habla **sin congelar la cámara**. Dice el nombre de cada letra (`jota`, `eñe`, `doble ve`…) y lee la palabra completa al asentir o tras 4 s sin escribir.
 
 ## Qué tan bien funciona
 
@@ -126,22 +191,47 @@ Se calibró y se probó con **nueve sesiones guiadas** grabadas con la cámara r
 | Trazos con movimiento (fases reconocidas) | 11 de 16 | 13 de 16 (calibración: 16 de 16) |
 | Rostro, eventos falsos en 19.4 min con cara visible | — | **11** (la versión anterior: 100), con los mismos aciertos |
 | Misma mano reflejada como la otra (espejo) | — | **100 %** igual (8 336 fotogramas) |
-| Velocidad | — | 25-26 FPS conectada; 17 FPS en batería con dos manos |
+| Velocidad del reconocimiento | — | 25-26 FPS conectada; 17 FPS en batería con dos manos |
+| Transmisión a la interfaz web | — | 30 FPS recibidos, ~11 KB por fotograma |
 
-**Limitaciones:** la **P y la R** dependen de cómo cruces los dedos y en las pruebas se confundieron; algunas preguntas falsas con las cejas aparecen mientras haces letras (al mirar la mano o la pantalla); con dos manos y la laptop en batería baja a ~17 FPS. Detalles, cifras y la metodología completa en la [documentación técnica](DOCUMENTACION.md).
+**Limitaciones:**
+- La **P y la R** dependen de cómo cruces los dedos y en las pruebas se confundieron.
+- Aparecen algunas preguntas falsas con las cejas mientras haces letras, al mirar la mano o la pantalla.
+- Con dos manos y la laptop en batería, el reconocimiento baja a ~17 FPS.
+- El servidor es solo local.
+- La práctica solo guarda la mejor racha.
+
+Detalles, cifras y la metodología completa en la [documentación técnica](DOCUMENTACION.md).
 
 ## Calibración
 
-Los umbrales están agrupados al inicio de `main.py`, cada uno con el rango medido que lo justifica. Si una seña cuesta trabajo, activa el diagnóstico con la tecla **D**: verás por cada mano el estado de cada dedo (`EXT` estirado, `DOB` doblado, `CER` cerrado) con su extensión y flexión, la posición del pulgar, la normal de la palma y los ángulos de la cabeza, y con eso puedes ajustar el umbral correspondiente.
+Los umbrales están agrupados al inicio de cada módulo (`classifier_hands.py` para las manos, `classifier_face.py` para el rostro), cada uno con el rango medido que lo justifica. Si una seña cuesta trabajo, activa el diagnóstico con la tecla **D**. Verás sobre el video, por cada mano:
+
+- el estado de cada dedo (`EXT` estirado, `DOB` doblado, `CER` cerrado) con su extensión y flexión;
+- la posición del pulgar y la normal de la palma;
+- los ángulos de la cabeza.
+
+Con eso puedes ajustar el umbral correspondiente.
 
 ## Estructura
 
 ```
 Proyecto/
-├── .vscode/          # Configuración para ejecutar con F5
-├── venv/             # Entorno virtual (no se sube a Git)
+├── .vscode/            # Ejecutar con F5 (server.py con el Python de venv)
+├── venv/               # Entorno virtual (no se sube a Git)
 ├── .gitignore
-├── main.py           # Programa principal
+├── server.py           # Servidor web: FastAPI, WebSocket /ws, abre el navegador
+├── main.py             # Motor: bucle de captura en su propio hilo
+├── classifier_hands.py # Manos: rasgos 3D, alfabeto y trazos
+├── classifier_face.py  # Rostro: solvePnP, cejas, negar y asentir
+├── traductor.py        # Hold-to-type por mano y orquestación
+├── voice_engine.py     # Voz y puente al hardware
+├── ui_panel.py         # Esqueleto de las manos sobre el video y estado JSON
+├── static/
+│   ├── index.html      # Interfaz
+│   ├── estilos.css     # Temas claro/oscuro, maquetación y animaciones
+│   └── app.js          # Cliente WebSocket, tema y Modo Práctica
+├── CLAUDE.md           # Mapa compacto para el asistente de código
 ├── README.md
-└── DOCUMENTACION.md  # Documentación técnica completa
+└── DOCUMENTACION.md    # Documentación técnica completa
 ```

@@ -2,7 +2,9 @@
 
 > **Documentación técnica oficial**
 > **Materia:** Inteligencia Artificial
-> **Stack:** Python 3.12 · MediaPipe 0.10.18 · OpenCV 4.11 (incluye `solvePnP`) · NumPy · pyttsx3
+> **Stack del backend:** Python 3.12 · MediaPipe 0.10.18 · OpenCV 4.11 (captura, codificación JPEG y `solvePnP`) · NumPy · pyttsx3 · FastAPI + uvicorn (HTTP y WebSocket)
+> **Stack del frontend:** HTML5 · CSS3 (variables, container queries, `color-mix`) · JavaScript sin dependencias (WebSocket nativo, Canvas 2D)
+> **Arquitectura:** cliente-servidor local (`127.0.0.1:5000`)
 > **Repositorio:** https://github.com/TheCubick/Proyecto-Lenguaje-de-se-a
 
 ### Leyenda de estado
@@ -11,7 +13,7 @@ En este documento cada componente lleva una etiqueta que indica su grado de avan
 
 | Etiqueta | Significado |
 |---|---|
-| **Implementado** | Funciona en el código actual (`main.py`) y se validó con grabaciones reales (sección 8) |
+| **Implementado** | Funciona en el código actual (`main.py` y sus módulos) y se validó con grabaciones reales (sección 8) |
 | **Diseñado** | Arquitectura y algoritmo definidos; pendiente de construir |
 | **Planeado** | Forma parte del roadmap a mediano o largo plazo |
 
@@ -25,6 +27,8 @@ En este documento cada componente lleva una etiqueta que indica su grado de avan
    - 2.2 [Señas con movimiento](#22-señas-con-movimiento-buffer-de-trayectoria-por-mano)
    - 2.3 [Módulo facial](#23-módulo-facial-pose-3d-de-la-cabeza-y-cejas)
    - 2.4 [Voz asíncrona](#24-voz-asíncrona-text-to-speech)
+   - 2.5 [Arquitectura cliente-servidor](#25-arquitectura-cliente-servidor)
+   - 2.6 [Frontend web](#26-frontend-web)
 3. [Flujo de trabajo y experiencia de usuario](#3-flujo-de-trabajo-y-experiencia-de-usuario-ux--ui)
 4. [Integración de hardware](#4-integración-de-hardware)
 5. [Roadmap y futuro del proyecto](#5-roadmap-y-futuro-del-proyecto)
@@ -50,6 +54,8 @@ El sistema traduce **en tiempo real** el **alfabeto dactilológico completo de l
 | **Voz** | Dice cada letra al registrarla y lee la palabra completa | Implementado |
 
 La LSM no se comunica solo con las manos: los **componentes no manuales** (expresión facial, movimientos de cabeza) tienen función gramatical. Por eso la arquitectura es **multimodal**.
+
+El sistema se entrega como una **aplicación web local**. Un backend en Python captura la cámara, ejecuta toda la inferencia y transmite por WebSocket el video y el estado del reconocimiento. Un frontend en el navegador los presenta y añade un **Modo Práctica** para aprender el alfabeto con retroalimentación inmediata. La interfaz no reconoce nada por sí misma: solo presenta lo que calcula el backend (sección 2.5).
 
 ### 1.2 Problema que atiende
 
@@ -104,11 +110,24 @@ Las señas se definieron a partir de la **lámina oficial "Abecedario en Lengua 
             └──────────┬─────┘                              │
                 ┌──────▼────────────────────────────────────▼──┐
                 │ Escritor: hold-to-type 1.5 s POR MANO, texto  │   (Traductor.paso orquesta todo:
-                └──────┬───────────────┬───────────────┬────────┘    el mismo código en vivo y en pruebas)
-          ┌────────────▼───┐   ┌───────▼────────┐   ┌──▼──────────────────────┐
-          │ Ventana cámara │   │ Panel          │   │ Hilo de voz (pyttsx3)   │
-          │ Izq: B | Der: O│   │ traductor      │   │ + enviar_a_hardware()   │
-          └────────────────┘   └────────────────┘   └─────────────────────────┘
+                └──────┬───────────────────────────────┬────────┘    el mismo código en vivo y en pruebas)
+       ┌───────────────▼──────────────────┐   ┌────────▼────────────────┐
+       │ ui_panel: esqueleto de las manos │   │ Hilo de voz (pyttsx3)   │
+       │ sobre el frame → JPEG            │   │ + enviar_a_hardware()   │
+       │ estado_web() → JSON              │   └─────────────────────────┘
+       └───────────────┬──────────────────┘
+                       │ Difusor (último paquete)          HILO DE CAPTURA (main.capturar)
+ ══════════════════════╪═════════════════════════════════════════════════════════════════
+                       │                                    SERVIDOR (server.py, asyncio)
+       ┌───────────────▼──────────────────┐
+       │ FastAPI · WebSocket /ws          │◀── acciones {"accion": ...} ── cola → hilo de captura
+       │ binario: JPEG · texto: JSON      │
+       └───────────────┬──────────────────┘
+                       │ ws://127.0.0.1:5000/ws
+       ┌───────────────▼──────────────────────────────────────────────────────┐
+       │ NAVEGADOR (static/): video en <canvas>, anillo hold-to-type, manos,  │
+       │ rostro, subtítulos, guía, tema claro/oscuro y Modo Práctica          │
+       └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -342,7 +361,7 @@ Con dos manos en escena es común taparse la cara. Cuando eso pasa, Face Mesh si
 | Cara visible | 0.8-1.4 % |
 | Manos encima de la cara | 1.7-3.8 % |
 
-Por encima de **1.8 %** el fotograma no cuenta para ningún gesto facial y el indicador muestra `Modo: Cara tapada`.
+Por encima de **1.8 %** el fotograma no cuenta para ningún gesto facial y la tarjeta *Rostro* de la interfaz muestra **Cara tapada**.
 
 #### 2.3.7 Negar y asentir con ángulos reales (`DetectorOscilacion`)
 
@@ -368,7 +387,7 @@ Tras un gesto de cabeza hay un enfriamiento de 1.2 s y las cejas se ignoran 0.8 
 | **Arranque** | Una frase de calentamiento en silencio, para que la primera letra real no se retrase |
 | **Cola** | `decir()` regresa al instante. Una **palabra** sustituye a las letras pendientes; si se acumulan más de 2 letras, se descartan las más viejas |
 | **Nombres de letras** | Se dice el nombre en español (`jota`, `eñe`, `doble ve`, `equis`…) y no un sonido suelto |
-| **Tolerancia a fallos** | Si falta `pyttsx3` o una voz, el programa sigue sin voz y lo indica en el panel (`Voz: no disponible`) |
+| **Tolerancia a fallos** | Si falta `pyttsx3` o una voz, el programa sigue sin voz y lo indica en el encabezado de la interfaz (**Sin voz**) |
 
 **Cuándo habla** (`PoliticaVoz`):
 
@@ -378,6 +397,147 @@ Tras un gesto de cabeza hay un enfriamiento de 1.2 s y las cejas se ignoran 0.8 
 | Se **confirma** la palabra (asentir) | la palabra completa |
 | Pasan **4 s sin nuevas letras** | la palabra pendiente (una sola vez) |
 | Espacio, borrar, `?` | nada |
+
+---
+
+### 2.5 Arquitectura cliente-servidor
+
+**Implementado.** La percepción y la presentación están separadas en dos procesos lógicos que se comunican por un WebSocket local:
+
+| Capa | Archivos | Responsabilidad |
+|---|---|---|
+| **Motor** (hilo de captura) | `main.py` → `classifier_hands`, `classifier_face`, `traductor`, `voice_engine`, `ui_panel` | Leer la cámara, reconocer manos y rostro, escribir el texto, hablar, dibujar el esqueleto de las manos sobre el frame y serializar el estado |
+| **Servidor** | `server.py` (FastAPI + uvicorn) | Servir los archivos estáticos, transmitir video y estado a cada cliente y recibir sus acciones |
+| **Cliente** | `static/index.html`, `estilos.css`, `app.js` | Presentar el video y el estado, ofrecer controles, tema visual y Modo Práctica |
+
+#### 2.5.1 Modelo de concurrencia
+
+| Hilo | Qué ejecuta | Por qué está separado |
+|---|---|---|
+| **Captura** (`main.capturar`) | Bucle cámara → MediaPipe → `Traductor.paso()` → voz y hardware → JPEG + JSON | MediaPipe y OpenCV son bloqueantes; no deben detener el servidor |
+| **Voz** (`VozAsincrona`) | Motor SAPI5 de `pyttsx3` | Hablar tarda segundos; nunca bloquea la captura (sección 2.4) |
+| **Bucle de eventos** (uvicorn) | Conexiones HTTP y WebSocket, una corrutina por cliente | E/S de red asíncrona |
+| **Grupo de hilos de asyncio** | `Difusor.esperar()` vía `asyncio.to_thread` | Espera bloqueante del siguiente frame sin congelar el bucle de eventos |
+
+**Escritor único.** Solo el hilo de captura modifica el texto y el estado del reconocimiento. Las acciones del navegador (Espacio, Borrar, Limpiar, Diagnóstico, Recalibrar) entran a una `queue.Queue` y el hilo de captura las aplica al **inicio del siguiente fotograma**. Así no hace falta ningún candado sobre `Escritor` ni sobre `AnalizadorFacial`.
+
+#### 2.5.2 Difusión con semántica de "último valor" (`Difusor`)
+
+El `Difusor` guarda **un solo paquete**, el más reciente (JPEG, JSON), con un número de secuencia y una `threading.Condition`. Cada cliente recuerda el último número que envió y pide el siguiente:
+
+```
+captura ──publicar(jpeg, json)──▶ [ n = 1042 | paquete ] ──esperar(visto=1040)──▶ cliente A (recibe 1042)
+                                                         ──esperar(visto=1042)──▶ cliente B (espera al 1043)
+```
+
+- **Sin colas por cliente:** si un navegador va lento, **se salta fotogramas** en lugar de acumular retraso. La latencia queda acotada por un solo fotograma.
+- **Varios clientes** pueden ver la misma sesión; todos comparten el mismo texto.
+- La espera tiene un tiempo límite de 0.5 s para que el servidor pueda cerrarse aunque la cámara se detenga.
+
+#### 2.5.3 Protocolo del WebSocket (`/ws`)
+
+| Dirección | Tipo de mensaje | Cuándo | Contenido |
+|---|---|---|---|
+| Servidor → cliente | Texto `{"tipo": "config"}` | Una vez, al conectar | `guia` (30 señas con descripción y movimiento), `umbral_cejas`, `segundos` (hold-to-type) y `bases` (configuración base de cada seña con movimiento, p. ej. `J ← I, Y`) |
+| Servidor → cliente | **Binario** | Cada fotograma | JPEG 640×480, calidad 80, con el esqueleto de las manos ya dibujado y **sin textos** |
+| Servidor → cliente | Texto `{"tipo": "estado"}` | Cada fotograma | Estado completo (tabla siguiente) |
+| Servidor → cliente | Texto `{"tipo": "error"}` | Si no hay cámara o se pierde la señal | `mensaje` legible; se conserva para los clientes que se conecten después |
+| Cliente → servidor | Texto `{"accion": ...}` | Botón o tecla | `ESPACIO`, `BORRAR`, `LIMPIAR`, `DIAGNOSTICO`, `RECALIBRAR` o `SALIR`; cualquier otro valor o JSON inválido se ignora |
+
+Campos del mensaje `estado` (`ui_panel.estado_web`):
+
+| Campo | Tipo | Significado |
+|---|---|---|
+| `sena`, `estado`, `progreso`, `lado` | texto · texto · 0-100 · `"Izq"`/`"Der"` | Seña de la **mano principal** (la que acaba de registrar o la que más avanzó). `estado`: `ninguna`, `sostener`, `mover`, `pose` (necesita trazo) o `registrada` |
+| `manos.Izq`, `manos.Der` | objeto | Por mano: `sena`, `estado`, `progreso`, `caja` (recuadro normalizado 0-1 para colocar la etiqueta HTML) y `pista` (`"o traza una J"`…) |
+| `texto` | texto | Texto acumulado, ya con `limpiar_texto` aplicado |
+| `rostro` | objeto | `modo` (`SIN_ROSTRO`, `TAPADO`, `CALIBRANDO`, `NEUTRO`, `CEJAS`, `PREGUNTA`, `NEGACION`, `AFIRMACION`), `pregunta` y `calibracion` (0-100), `cejas` (razón contra la base) y `cabeza` (`[pitch, yaw, roll]` en grados) |
+| `voz`, `fps`, `tamano` | texto · número · `[ancho, alto]` | Estado de la voz, FPS del motor y resolución del video |
+| `diagnostico` | lista de textos o `null` | Rasgos 3D por mano y desviaciones de la cabeza, solo con el diagnóstico activo |
+
+> **Por qué el video viaja como binario y no en base64:** un JPEG en base64 ocupa un 33 % más y obliga a decodificar texto en el navegador. Como mensaje binario se convierte directamente en imagen con `createImageBitmap`.
+
+#### 2.5.4 Ciclo de vida
+
+1. `python server.py` crea el servidor uvicorn. Al arrancar (`lifespan`) lanza el hilo de captura y, un segundo después, abre `http://localhost:5000` con `webbrowser`.
+2. Si la cámara no abre, el hilo publica un mensaje `error` y termina; el servidor sigue arriba para que la interfaz lo muestre.
+3. **Cierre:** el botón *Detener* (con confirmación en dos pasos) envía `SALIR`, o se pulsa Ctrl+C en la terminal. Uvicorn cierra las conexiones (`timeout_graceful_shutdown = 2 s`). Después, el `lifespan` activa el evento `detener` y espera al hilo de captura, que libera la cámara y cierra la voz.
+
+#### 2.5.5 Seguridad y privacidad
+
+- El servidor escucha **solo en `127.0.0.1`**: ni el video ni el texto son accesibles desde otra computadora de la red.
+- No se guarda ningún fotograma: cada JPEG existe en memoria hasta que llega el siguiente.
+- Están desactivadas las rutas automáticas de documentación de FastAPI (`/docs`, `/redoc`, `/openapi.json`).
+- No hay autenticación porque el alcance es local. Exponerlo en una red exigiría autenticación y TLS (`wss://`).
+
+#### 2.5.6 Desempeño medido
+
+Prueba en vivo con la cámara real y un cliente WebSocket durante 8 s:
+
+| Medida | Resultado |
+|---|---|
+| Fotogramas recibidos por el cliente | **30.1 FPS** (243 JPEG y 243 estados, sin pérdidas) |
+| Tamaño del video | **11.3 KB** por fotograma en promedio (≈ 2.7 Mbit/s a 30 FPS) |
+| Acciones del navegador | `ESPACIO`, `BORRAR`, `DIAGNOSTICO` y `RECALIBRAR` aplicadas; JSON inválido ignorado sin errores |
+| Cierre con `SALIR` | **0.5 s** hasta liberar la cámara y terminar el proceso |
+
+La latencia de extremo a extremo desde la cámara hasta la pantalla no se ha medido todavía.
+
+---
+
+### 2.6 Frontend web
+
+**Implementado.** Son tres archivos estáticos, sin frameworks ni paso de compilación. Las únicas dependencias externas son las fuentes *Inter* y *JetBrains Mono* de Google Fonts; sin conexión a internet se usa la fuente del sistema (*Segoe UI*).
+
+| Archivo | Contenido |
+|---|---|
+| `index.html` | Estructura semántica: encabezado, tarjeta de cámara con subtítulos, panel lateral con pestañas *Traducir* / *Práctica*, tarjetas de manos y rostro, guía lateral del alfabeto |
+| `estilos.css` | Variables de diseño por tema, maquetación con CSS Grid y *container queries*, animaciones y diseño adaptable |
+| `app.js` | Conexión y reconexión del WebSocket, video, actualización del DOM, tema, teclado y Modo Práctica |
+
+#### 2.6.1 Video
+
+Cada mensaje binario se decodifica con `createImageBitmap` y se pinta en un `<canvas>`. Mientras se decodifica un fotograma, solo se guarda **el último que llega**; los intermedios se descartan. Es la misma política de "último valor" del servidor, así que el navegador tampoco acumula retraso. La proporción del lienzo se toma del primer fotograma (`--ar`) y se ajusta al espacio disponible con unidades `cqw`/`cqh`, sin deformar la imagen ni recortarla.
+
+Las etiquetas de cada mano (`Izq · D`, `Der · B`, con su mini barra) son **elementos HTML** colocados sobre el video con la `caja` normalizada que manda el servidor. El frame solo lleva el esqueleto translúcido y las articulaciones en el color de cada mano (azul la izquierda, verde la derecha).
+
+#### 2.6.2 Actualización eficiente del DOM
+
+El estado llega unas 30 veces por segundo. Las funciones `poner()` y `atributo()` solo escriben cuando el valor cambia, para no provocar recálculos de estilo innecesarios. Los estados visuales se expresan con atributos `data-*` (`data-fase`, `data-estado`, `data-modo`, `data-tono`) y el CSS decide colores y animaciones.
+
+#### 2.6.3 Sistema de temas
+
+- Todos los colores son **variables CSS**: `:root, [data-theme="dark"]` define el tema oscuro y `[data-theme="light"]` el claro.
+- El **tema oscuro** es el predeterminado: fondo `#121212`, superficies `#1B1B1F`, acento verde esmeralda `#2EE59D` y azul eléctrico `#3B82F6`.
+- El **tema claro** usa fondo `#F5F7FA`, superficies blancas y acentos más oscuros (verde `#059669`, azul `#2563EB`) para mantener el contraste.
+- Un script en el `<head>` aplica el tema guardado **antes del primer pintado**, así que no hay destello del tema equivocado.
+- El cambio se hace con el interruptor sol/luna del encabezado (`role="switch"`) o con la tecla `T`.
+- El video y las etiquetas sobre él mantienen colores fijos en ambos temas.
+
+#### 2.6.4 Persistencia en el navegador
+
+| Clave de `localStorage` | Guarda |
+|---|---|
+| `lsm-tema` | `dark` o `light` |
+| `lsm-vista` | Última pestaña (`traducir` o `practica`) |
+| `lsm-mejor-racha` | Mejor racha del Modo Práctica |
+
+Todas las lecturas y escrituras están protegidas con `try/catch`: si el navegador bloquea el almacenamiento (modo privado), la interfaz funciona igual y solo pierde la preferencia al recargar.
+
+#### 2.6.5 Accesibilidad y diseño adaptable
+
+- Los subtítulos y la retroalimentación de práctica usan `aria-live="polite"`, para que un lector de pantalla los anuncie.
+- Pestañas con `role="tab"`, interruptor con `role="switch"` y foco visible en todos los controles.
+- Con `prefers-reduced-motion` se desactivan animaciones, confeti y transiciones.
+- Los atajos de teclado se ignoran mientras se escribe en un campo de texto.
+- **Diseño adaptable** según el tamaño de la pantalla:
+
+| Pantalla | Distribución |
+|---|---|
+| Ancho > 1000 px | Dos columnas: video a la izquierda y panel a la derecha |
+| Altura ≤ 860 px | Panel compacto: anillo más chico y menos espacio entre tarjetas |
+| Ancho ≤ 1000 px | Una sola columna |
+| Ancho ≤ 620 px | Botones solo con icono |
 
 ---
 
@@ -399,29 +559,81 @@ Tras un gesto de cabeza hay un enfriamiento de 1.2 s y las cejas se ignoran 0.8 
 | Señas con movimiento | Se registran **al completar el trazo** (la barra salta al 100 %) |
 | Texto | Los espacios se ven como espacios y **cualquier guion bajo se reemplaza por un espacio** en pantalla, en la voz y en lo que se envía al hardware (`limpiar_texto`) |
 
-### 3.3 Interfaz dual
+### 3.3 Interfaz web
 
-**Ventana "Camara IA - Deteccion LSM"**
-- Video en espejo con **el esqueleto de cada mano** (puntos azules la izquierda, verdes la derecha) y los puntos de cejas y ojos.
-- Por cada mano: recuadro con esquinas resaltadas (gris: sin seña · azul: cargando · verde: registrada · ámbar: configuración que necesita movimiento), **etiqueta `Izq: B` / `Der: O`**, mini barra de progreso propia, pista (`o traza una J`, `o agita para K`…) y **estela** del dedo mientras dibuja.
-- **Resumen arriba al centro:** `Izq: B  |  Der: O`.
-- **Medidor de cejas** (`CEJAS x1.11` con la marca del umbral) y debajo los **ángulos reales de la cabeza** (`P+3 Y-12 R-1`).
-- Indicador `Modo: Neutro / Pregunta ? / Negacion X / Afirmacion OK / Calibrando... / Cara tapada`.
-- Barra inferior de la mano principal (`Sosten la sena B (Der) quieta... 60%`) y FPS.
-- Modo diagnóstico (`D`): por mano, estado y extensión de cada dedo, flexiones, orientación, pulgar, normal de la palma, cruce y velocidad; de la cabeza, desviaciones de yaw y pitch, distancia y apertura de ojos.
+Una sola página con cuatro zonas:
 
-**Ventana "Panel Traductor LSM"** (lienzo NumPy): la seña de la **mano principal** en grande con la etiqueta `MANO IZQ` / `MANO DER` (la principal es la que acaba de registrar o la que más avanzó su barra), el resumen de ambas manos en el encabezado, cómo se hace, la **guía del alfabeto**, el recordatorio de los gestos del rostro, la caja de texto y el estado de la voz.
-
-### 3.4 Teclado
-
-| Tecla | Acción |
+| Zona | Contenido |
 |---|---|
-| `Espacio` | Agregar un espacio |
-| `Backspace` | Borrar la última letra |
-| `C` | Limpiar todo el texto |
-| `D` | Modo diagnóstico |
-| `N` (o `R`) | Recalibrar la cara neutra |
-| `ESC` o la `X` de cualquier ventana | Salir limpiamente |
+| **Encabezado** | Marca, estado de la voz (*Voz lista*, *Iniciando voz*, *Sin voz*), interruptor de tema sol/luna, botón de la guía del alfabeto y botón *Detener* |
+| **Cámara** | Indicador *En vivo* y FPS; barra de herramientas (Espacio, Borrar, Limpiar, Recalibrar rostro, Diagnóstico); video en espejo con el esqueleto de cada mano, la **estela** del dedo mientras traza y una **etiqueta flotante por mano** (`Izq · D`, `Der · B`) con su mini barra; diagnóstico superpuesto (tecla `D`) |
+| **Subtítulos** | Texto acumulado **centrado debajo del video**, en tipografía grande y con cursor parpadeante. Lo último que se agrega entra con un desplazamiento y un fundido breve en verde |
+| **Panel lateral** | Pestañas *Traducir* / *Práctica*; tarjetas de cada mano (seña, estado y progreso); tarjeta *Rostro* (icono y estado, barra de calibración o de pregunta, medidor de cejas contra el umbral y ángulos de cabeceo, giro e inclinación) |
+
+**Pestaña Traducir:** la seña de la **mano principal** dentro de un **anillo de progreso SVG** que representa el hold-to-type, con la mano que la hace, un mensaje de estado (*Mantén la seña quieta · 64 %*, *Registrada*, *Mueve la mano para escribir J*) y la tarjeta *Cómo se hace*, con la descripción, el movimiento o la pista de trazo.
+
+El anillo cambia de color según la fase de retención:
+
+| Progreso | Fase | Color | Efecto |
+|---|---|---|---|
+| 0-49 % | Inicio | Azul claro | — |
+| 50-99 % | Procesando | Ámbar | La letra se tiñe de ámbar |
+| 100 % (registrada) | Éxito | Verde | Pulso de escala y brillo (`box-shadow`) alrededor del anillo |
+| Configuración que necesita trazo | Esperando movimiento | Gris, trazo punteado | — |
+
+**Guía del alfabeto** (botón del libro o tecla `G`): panel lateral con las 30 señas; las que llevan movimiento se marcan en ámbar. Se resalta la que se está haciendo, y al tocar una se abre directamente en el Modo Práctica.
+
+Los botones, tarjetas, colores y estados usan `transition: all 0.3s ease`. Las excepciones son las etiquetas que siguen a la mano y las barras de progreso: tienen transiciones de 90-150 ms, porque con 0.3 s quedarían visiblemente atrasadas respecto a la mano.
+
+### 3.4 Modo Práctica
+
+**Implementado.** Herramienta de aprendizaje: la persona elige qué practicar y la interfaz valida sus intentos con el mismo reconocimiento que usa el traductor.
+
+| Elemento | Detalle |
+|---|---|
+| **Letras** | Tira desplazable con las 30 señas (las de movimiento en ámbar), flechas anterior/siguiente y letra al azar. Las acertadas en la sesión llevan un punto verde |
+| **Palabras** | 10 palabras sugeridas (`HOLA`, `GRACIAS`, `AMIGO`, `CASA`, `AGUA`, `NIÑO`, `FELIZ`, `JUEGO`, `QUESO`, `KIWI`) o una propia de hasta 12 letras (se quitan acentos y se conserva la Ñ). Se deletrea letra por letra; unas fichas muestran las letras hechas, la actual y las pendientes |
+| **Tarjeta de referencia** | Espacio reservado para la imagen de la seña (aún sin imágenes), letra, tipo (*Estática* o *Con movimiento*), descripción y movimiento o tiempo de retención |
+| **Marcador** | Aciertos y racha de la sesión, y mejor racha (guardada en el navegador) |
+
+**Validación** (`evaluarPractica` en `app.js`, sobre cada mensaje `estado`):
+
+- **Acierto:** una mano **pasa a `registrada`** con la seña objetivo. Se detecta el flanco (de otro estado a `registrada`), así que sostener la seña no cuenta varias veces; para repetirla hay que deshacerla y volver a hacerla, igual que en el traductor.
+- **Fallo:** se registra **otra letra**. La racha vuelve a cero y la tarjeta se sacude. `ESPACIO` y `BORRAR` no cuentan como fallo, porque la mano abierta es una postura de reposo frecuente.
+- Durante una celebración (1.8 s; 2.3 s al completar una palabra) no se evalúan registros nuevos.
+
+**Retroalimentación en vivo**, en cada fotograma:
+
+| Situación | Mensaje | Indicador |
+|---|---|---|
+| Ninguna mano a la vista | *Muestra tu mano a la cámara* | Gris |
+| Alguna mano hace la seña objetivo | *¡Esa es! Mantenla quieta…* y barra con las fases del anillo | Verde; el borde de la cámara se tiñe de verde |
+| Alguna mano hace la **base** de una seña con movimiento (p. ej. la I cuando se practica la J; viene de `bases` en el mensaje `config`) | *Bien, I es la base: ahora haz el movimiento* | Ámbar |
+| Otra seña | *Detecto «B». Compárala con la referencia* | Rojo |
+
+**Celebración de un acierto:**
+
+- La tarjeta de referencia **gira** (`rotateY`, 0.6 s) y muestra una palomita que se dibuja.
+- Salen **28 partículas de confeti** con los colores del tema.
+- El borde de la cámara se ilumina en verde y aparece un **sello** con palomita sobre el video.
+- En una palabra, cada letra correcta marca su ficha y se pasa a la siguiente; al completarla gira la tarjeta.
+
+> El modo práctica comparte el registro con el traductor: **cada letra acertada también se escribe en los subtítulos** (y se dice en voz alta). Con Limpiar (`C`) se vacía el texto.
+
+### 3.5 Teclado y controles
+
+Los atajos funcionan con la ventana del navegador activa, salvo mientras se escribe en un campo de texto.
+
+| Tecla | Botón | Acción |
+|---|---|---|
+| `Espacio` | Espacio | Agregar un espacio |
+| `Backspace` | Borrar | Borrar la última letra |
+| `C` | Limpiar | Limpiar todo el texto |
+| `D` | Diagnóstico | Mostrar u ocultar el diagnóstico sobre el video |
+| `N` (o `R`) | Recalibrar | Recalibrar la cara neutra |
+| `G` | Libro | Abrir o cerrar la guía del alfabeto (`Esc` la cierra) |
+| `T` | Sol/luna | Cambiar entre tema claro y oscuro |
+| — | Detener (dos clics) | Cerrar el servidor, liberar la cámara y terminar el programa (también Ctrl+C en la terminal) |
 
 ---
 
@@ -548,6 +760,8 @@ void loop() {
 | **4. Alfabeto completo** | 21 letras estáticas + J, K, Ñ, Q, X, Z con movimiento | Completado |
 | **5. Voz** | Cada letra y la palabra completa, en un hilo aparte | Completado |
 | **6. Dos manos y geometría 3D** | Lateralidad, estado por mano, espejo canónico, One-Euro, rasgos 3D, `solvePnP`, cara tapada | Completado (P/R y algunos trazos con fiabilidad media, ver sección 8) |
+| **6.1 Modularización** | `main.py` monolítico dividido en módulos, con equivalencia verificada (sección 11.2) | Completado |
+| **6.2 Arquitectura web** | Servidor FastAPI + WebSocket, interfaz web con tema claro/oscuro y Modo Práctica (secciones 2.5, 2.6 y 3.4) | Completado |
 | **7. Hardware físico** | Pantalla OLED en protoboard por USB o Wi-Fi | Diseñado |
 | **8. Machine Learning** | Clasificador entrenado con landmarks propios (k-NN, Random Forest, red densa) para los pares ambiguos (P/R, D/X, ESPACIO/mano relajada) | Planeado |
 | **9. Señas dinámicas con LSTM / GRU** | Reemplazar las reglas de trazo; añadir CH, LL y RR | Planeado |
@@ -574,7 +788,7 @@ Las **sesiones guiadas** que se usaron para calibrar (sección 8.1) ya son una h
 ### 5.2 Impacto social
 
 - **Aplicación móvil:** MediaPipe tiene soporte nativo para Android e iOS, así que el mismo pipeline puede llevarse al teléfono.
-- **Herramienta educativa:** practicar el alfabeto dactilológico con retroalimentación inmediata.
+- **Herramienta educativa:** el Modo Práctica (sección 3.4) ya permite practicar letras y deletrear palabras con retroalimentación inmediata. Faltan imágenes de referencia de cada seña y estadísticas persistentes por persona.
 - **Validación con la comunidad:** pruebas con personas usuarias de LSM para corregir la forma de las señas y priorizar el vocabulario.
 
 ---
@@ -588,51 +802,80 @@ Las **sesiones guiadas** que se usaron para calibrar (sección 8.1) ya son una h
 | Sistema operativo | Windows 10/11 |
 | Python | **3.12** (MediaPipe 0.10.18 **no** es compatible con 3.13) |
 | Hardware | Cámara web integrada o USB |
+| Navegador | Chrome, Edge o Firefox recientes (usa *container queries*, `color-mix()` y `createImageBitmap`) |
+| Puerto | `5000` libre en `127.0.0.1` |
 | Voz | Una voz SAPI5 en español (en Windows: *Microsoft Sabina* o *Helena*). Si falta, el programa funciona sin voz |
-| Editor | VS Code con la extensión **Python** |
+| Editor | VS Code con la extensión **Python** (opcional) |
 
 ### 6.2 Dependencias
 
-| Librería | Uso |
-|---|---|
-| `mediapipe==0.10.18` | Detección de las manos (Hands, con coordenadas de mundo y lateralidad) y del rostro (Face Mesh) |
-| `opencv-python` | Captura de video, dibujo, ventanas y **`solvePnP`** |
-| `numpy` | Geometría 3D, filtro One-Euro, panel y trayectorias |
-| `pyttsx3` | Voz (en Windows instala también `comtypes` y `pywin32`) |
+| Librería | Capa | Uso |
+|---|---|---|
+| `mediapipe==0.10.18` | Motor | Detección de las manos (Hands, con coordenadas de mundo y lateralidad) y del rostro (Face Mesh) |
+| `opencv-python` | Motor | Captura de video, dibujo del esqueleto, codificación JPEG y **`solvePnP`** |
+| `numpy` | Motor | Geometría 3D, filtro One-Euro y trayectorias |
+| `pyttsx3` | Motor | Voz (en Windows instala también `comtypes` y `pywin32`) |
+| `fastapi` | Servidor | Rutas HTTP, archivos estáticos y WebSocket |
+| `uvicorn` | Servidor | Servidor ASGI |
+| `websockets` | Servidor | Implementación del protocolo WebSocket que usa uvicorn |
 
-> **No se agregaron dependencias para esta versión.** El filtro One-Euro (20 líneas) y la pose de la cabeza (`cv2.solvePnP`) no necesitan librerías extra; las coordenadas del modelo canónico de la cara están escritas en `main.py`.
+> El frontend no requiere instalar nada: HTML, CSS y JavaScript sin dependencias. El filtro One-Euro y la pose de la cabeza (`cv2.solvePnP`) tampoco requieren librerías extra; las coordenadas del modelo canónico de la cara están escritas en `classifier_face.py`.
 
-### 6.3 Crear el entorno virtual (`venv`)
+### 6.3 Instalación
 
 ```powershell
-# 1. Crear el entorno con Python 3.12
+# 1. Clonar el repositorio
+git clone https://github.com/TheCubick/Proyecto-Lenguaje-de-se-a.git
+cd Proyecto-Lenguaje-de-se-a
+
+# 2. Crear el entorno virtual con Python 3.12
 py -3.12 -m venv venv
 
-# 2. Instalar dependencias
+# 3. Instalar dependencias
 .\venv\Scripts\python.exe -m pip install --upgrade pip
-.\venv\Scripts\python.exe -m pip install opencv-python mediapipe==0.10.18 numpy pyttsx3
+.\venv\Scripts\python.exe -m pip install opencv-python mediapipe==0.10.18 numpy pyttsx3 fastapi uvicorn websockets
+
+# 4. Verificar que todo importa
+.\venv\Scripts\python.exe -c "import main, server; print('OK')"
 ```
 
 > La carpeta `venv/` está en `.gitignore`: cada integrante crea la suya localmente y no se sube al repositorio.
 
-### 6.4 Ejecución rápida con F5
+### 6.4 Ejecución
 
-1. Abre la carpeta `Proyecto/` en VS Code.
-2. Pulsa **`F5`**, o el botón en *Ejecutar y depurar*, y elige **"Traductor LSM (main.py)"**.
+```powershell
+.\venv\Scripts\python.exe server.py
+```
+
+1. La terminal muestra `Traductor LSM en http://localhost:5000` y, un segundo después, se abre esa dirección en el **navegador predeterminado**. Si no se abre, escríbela a mano.
+2. Permite que la cámara se encienda; el indicador cambia a **En vivo**.
+3. Mantén la cara neutra unos segundos mientras la tarjeta *Rostro* dice **Calibrando**.
+4. Para terminar, pulsa **Detener** dos veces en la interfaz o **Ctrl+C** en la terminal.
+
+**Con VS Code:** pulsa **`F5`** y elige **"Traductor LSM (server.py)"**.
 
 | Archivo | Qué configura |
 |---|---|
-| `.vscode/launch.json` | Ejecuta `main.py` con `venv\Scripts\python.exe` directamente, sin depender de activar el entorno |
+| `.vscode/launch.json` | Ejecuta `server.py` con `venv\Scripts\python.exe` directamente, sin depender de activar el entorno |
 | `.vscode/settings.json` | Fija `venv` como intérprete del proyecto y crea un perfil de terminal **"PowerShell (venv)"** con `ExecutionPolicy Bypass`, para que Windows no bloquee `Activate.ps1` |
 
-**Alternativa desde la terminal:** `.\venv\Scripts\python.exe main.py`
+`python main.py` también funciona: delega en `server.main()`.
+
+**Solución de problemas:**
+
+| Síntoma | Causa probable | Solución |
+|---|---|---|
+| La interfaz dice *No se pudo acceder a la cámara* | Otra aplicación (Teams, Zoom, otra instancia) tiene la cámara | Cerrarla y volver a ejecutar |
+| `error while attempting to bind on address ('127.0.0.1', 5000)` | Otra instancia del servidor sigue abierta | Cerrarla, o cambiar `PUERTO` en `server.py` |
+| *Reconectando* en el indicador | El servidor se detuvo o se reinició | El navegador reintenta cada segundo; volver a ejecutar `server.py` |
+| La tipografía se ve distinta | Sin conexión a Google Fonts | No afecta el funcionamiento; se usa la fuente del sistema |
 
 ### 6.5 Recomendaciones de uso
 
 - Iluminación frontal y uniforme; evita tener una ventana detrás.
 - Manos completas dentro del cuadro, a 40-80 cm de la cámara.
 - **Con dos manos:** tenlas a la altura del pecho, separadas y **sin tapar la cara**. Con las manos juntas delante de la cara, MediaPipe llegó a no detectar ninguna (sección 8.3).
-- Al iniciar, **mantén la cara neutra** unos 1.5 s (`Modo: Calibrando...`); `N` recalibra.
+- Al iniciar, **mantén la cara neutra** unos 1.5 s (la tarjeta *Rostro* muestra **Calibrando**); `N` recalibra.
 - **Los trazos (Z, ?, J…) deben ser pequeños, del tamaño de la mano**, sin sacarla del cuadro. Los movimientos muy rápidos pueden hacer que la cámara pierda la mano.
 - Sostén cada letra **quieta** hasta que la barra llegue al 100 %.
 
@@ -642,7 +885,7 @@ py -3.12 -m venv venv
 
 ## 7. Calibración
 
-Todos los umbrales están al inicio de `main.py`, cada uno con el rango medido que lo justifica. El **modo diagnóstico** (tecla `D`) muestra los valores en vivo.
+Todos los umbrales están al inicio de su módulo (`classifier_hands.py`, `classifier_face.py`, `traductor.py`, `voice_engine.py`), cada uno con el rango medido que lo justifica. El **modo diagnóstico** (tecla `D`) muestra los valores en vivo.
 
 | Constante | Valor | Controla |
 |---|---|---|
@@ -681,7 +924,7 @@ Todos los umbrales están al inicio de `main.py`, cada uno con el rango medido q
 
 Se grabaron **nueve sesiones guiadas** con la cámara real del autor. Una ventana mostraba la **lámina oficial** de cada letra (espejada para la mano izquierda), qué mano usar, una animación del trazo y un aviso en vivo si la mano detectada no era la pedida o si no se veían las dos manos. Se guardaron **solo coordenadas** (manos en imagen y en 3D de mundo, lateralidad, 468 puntos del rostro), nunca imágenes; se borraron al terminar.
 
-Cada grabación se **reprodujo con el `Traductor` real de `main.py`** (seguidor de manos, One-Euro, clasificador, estabilizador, trayectorias, hold-to-type y rostro), así que los resultados son los del programa, no de una copia.
+Cada grabación se **reprodujo con el `Traductor` real (`traductor.py`)** (seguidor de manos, One-Euro, clasificador, estabilizador, trayectorias, hold-to-type y rostro), así que los resultados son los del programa, no de una copia.
 
 | # | Sesión | Uso | Duración | Fotogramas |
 |---|---|---|---|---|
@@ -798,22 +1041,24 @@ Al reflejar la mano izquierda, **las mismas reglas** clasifican ambas manos sin 
 | Medida | Resultado |
 |---|---|
 | `Traductor.paso` (dos canales de mano, seguidor, clasificación 3D, trazos y rostro con `solvePnP`) | **3.3 ms** de mediana (p95 6.8 ms) |
-| Dibujo de ambas ventanas | 7.3 ms de mediana (p95 16.6 ms) |
 | MediaPipe (2 manos + rostro), laptop **conectada** (sesiones 1-4) | ≈ 25 ms por fotograma → **25-26 FPS** de captura |
 | MediaPipe solo, laptop **en batería** (40 %) | manos 37 ms con `max_num_hands=1` y **76 ms con 2** (con una mano a la vista busca la segunda en cada frame); rostro 7-11 ms |
-| `main.py` completo en vivo, en batería | **17 FPS** (60 ms de mediana por fotograma), 400 fotogramas, teclas simuladas, cierre limpio |
+| Motor completo en vivo, en batería (versión con ventanas de OpenCV) | **17 FPS** (60 ms de mediana por fotograma), 400 fotogramas, teclas simuladas, cierre limpio |
+| Arquitectura web en vivo, laptop conectada | **30.1 FPS** recibidos por un cliente WebSocket, 11.3 KB por fotograma, cierre en 0.5 s (sección 2.5.6) |
 | Voz | no bloquea el bucle (`decir()` regresa al instante; hilo propio) |
 
-El costo principal es MediaPipe, no el código del proyecto. En una PC lenta, `PROCESAR_ROSTRO_CADA = 2` o `MAX_MANOS = 1` recuperan FPS. Los trazos se miden en segundos y el hold-to-type con `time.monotonic()`, así que el reconocimiento no cambia con los FPS.
+En la arquitectura web, el motor ya no dibuja paneles: solo el esqueleto de las manos y la codificación JPEG. Toda la presentación la hace el navegador. El costo principal es MediaPipe, no el código del proyecto. En una PC lenta, `PROCESAR_ROSTRO_CADA = 2` o `MAX_MANOS = 1` recuperan FPS. Los trazos se miden en segundos y el hold-to-type con `time.monotonic()`, así que el reconocimiento no cambia con los FPS.
 
 ### 8.10 Pruebas automáticas
 
 | Batería | Resultado |
 |---|---|
 | **28 pruebas de lógica**: hold-to-type por mano, misma letra con ambas manos, bloqueo tras un trazo, seguidor de manos (duplicados, parpadeo, corrección, orden), espejo canónico, One-Euro (temblor y retraso), voz, guiones bajos, coherencia de vaivenes | **28 de 28** |
-| Dibujo de las dos ventanas con 520 fotogramas reales de dos manos y rostro (con y sin diagnóstico) | sin errores |
 | Reproducción completa de las 9 sesiones con el `Traductor` real | resultados de las secciones 8.2-8.8 |
-| `main.py` en vivo con la cámara (sección 8.9) | ventanas, teclas `N`, `D`, `Espacio`, `Backspace`, envíos al hardware y cierre limpio |
+| Servidor web en vivo con la cámara real y un cliente WebSocket | 243 fotogramas y 243 estados recibidos; acciones aplicadas; JSON inválido ignorado; cierre limpio con `SALIR` |
+| Revisión estática | `pyflakes` sin avisos en todos los módulos y `node --check` sin errores en `app.js` |
+
+> La interfaz web (tema, Modo Práctica, animaciones) se revisa manualmente en el navegador; todavía no tiene pruebas automáticas de interfaz.
 
 ---
 
@@ -831,8 +1076,12 @@ El costo principal es MediaPipe, no el código del proyecto. En una PC lenta, `P
 | **FPS con dos manos** | `max_num_hands=2` duplica el tiempo de MediaPipe Hands mientras solo hay una mano a la vista; en batería, 17 FPS | Conectar la laptop; `MAX_MANOS = 1` o `PROCESAR_ROSTRO_CADA = 2` en una PC lenta |
 | **Una sola persona** | Todos los umbrales se calibraron con la mano y la cara del autor | Repetir las sesiones guiadas con más personas |
 | **CH, LL y RR** | No incluidas | Roadmap |
-| **Fuentes de OpenCV** | No dibujan acentos; la Ñ se compone a mano | Texto sin acentos en pantalla y Ñ propia |
 | **Voz del sistema** | Requiere una voz SAPI5 en español | Si falta, el programa sigue sin voz |
+| **Una sesión por computadora** | La cámara y el texto son únicos: varias pestañas ven y controlan la misma sesión | Usar una sola pestaña |
+| **Modo Práctica y texto** | Cada acierto también se escribe en los subtítulos | Limpiar (`C`) al terminar de practicar |
+| **Estadísticas de práctica** | Solo se guarda la mejor racha, en el navegador; los aciertos se pierden al recargar | Persistencia en base de datos (roadmap) |
+| **Imágenes de referencia** | La tarjeta de práctica muestra un espacio reservado, sin foto de la seña | Agregar las imágenes de la lámina SEP |
+| **Solo local** | El servidor escucha en `127.0.0.1`, sin autenticación ni TLS | Requisito previo a cualquier despliegue en red |
 
 ---
 
@@ -859,6 +1108,18 @@ El costo principal es MediaPipe, no el código del proyecto. En una PC lenta, `P
 | **Más de 4 s con cejas arriba = nueva cara neutra** | Una sesión mantuvo la razón en ~1.11 durante 50 s y producía preguntas repetidas |
 | **BORRAR como barrido de mano abierta** | El puño es S, T o A; borrar con un puño borraría letras al escribirlas |
 
+**Decisiones de la arquitectura web**
+
+| Decisión | Motivo |
+|---|---|
+| **El navegador no reconoce nada** | El reconocimiento sigue siendo el `Traductor.paso()` validado con las 9 sesiones; la interfaz no puede alterar los resultados |
+| **Último valor en lugar de cola** (`Difusor`) | Con una cola, un cliente lento acumularía segundos de retraso; con el último paquete, el retraso máximo es un fotograma |
+| **JPEG binario en lugar de base64** | 33 % menos bytes y decodificación directa con `createImageBitmap` |
+| **Un solo hilo escribe el texto** | Las acciones del navegador pasan por una cola; no hace falta sincronizar `Escritor` |
+| **Etiquetas de las manos en HTML, no dibujadas en el frame** | Tipografía con acentos y Ñ reales, temas y animaciones, sin costo de dibujo en Python |
+| **`127.0.0.1` y sin persistencia de video** | La cámara es un dato sensible; nada sale de la computadora |
+| **Fallo de práctica solo con letras** | La mano abierta (ESPACIO) es una postura de reposo y castigaría la racha sin razón |
+
 ---
 
 ## 11. Referencia del código
@@ -872,26 +1133,38 @@ Proyecto/
 │   └── settings.json     # Intérprete del proyecto y perfil de PowerShell
 ├── venv/                 # Entorno virtual (ignorado por Git)
 ├── .gitignore
-├── main.py               # Código fuente del sistema (11 secciones)
+├── server.py             # Servidor web: FastAPI, WebSocket /ws, Difusor, apertura del navegador
+├── main.py               # Motor: bucle de captura en su propio hilo
+├── classifier_hands.py   # Manos: dos manos, One-Euro, rasgos 3D, alfabeto y trazos
+├── classifier_face.py    # Rostro: solvePnP, cejas, negar y asentir
+├── traductor.py          # Hold-to-type por mano y orquestación de un frame
+├── voice_engine.py       # Voz asíncrona y puente al hardware
+├── ui_panel.py           # Presentación: esqueleto de las manos y estado JSON
+├── static/
+│   ├── index.html        # Estructura de la interfaz
+│   ├── estilos.css       # Temas, maquetación y animaciones
+│   └── app.js            # Cliente WebSocket, tema y Modo Práctica
+├── CLAUDE.md             # Mapa compacto del proyecto para el asistente de código
 ├── README.md             # Resumen e inicio rápido
 └── DOCUMENTACION.md      # Este documento
 ```
 
-### 11.2 `main.py` por secciones
+### 11.2 Módulos
 
-| Sección | Elementos |
+Dependencias: `voice_engine` ← `classifier_hands` ← `classifier_face` ← `traductor` ← `ui_panel` ← `main` ← `server`. Cada módulo de reconocimiento empieza con sus umbrales, cada uno con el rango medido que lo justifica.
+
+| Módulo | Elementos |
 |---|---|
-| **1. Configuración** | constantes (con el rango medido que justifica cada umbral), `GUIA` del alfabeto, estados faciales |
-| **2. Texto y voz** | `limpiar_texto`, `nombre_hablado`, `ultima_palabra`, `_a_ascii` |
-| **3. Geometría y filtro** | `dist`, `unitario3`, `angulo3`, `angulo_vectores`, `desde_arriba`, `FiltroOneEuro` |
-| **4. Manos (rasgos 3D)** | `a_canonica` (espejo), `escala_mano`, `RasgosMano`, `analizar_mano` |
-| **5. Clasificación** | `clasificar_pose`, `decidir_q_o_x`, `Trayectoria`, `simplificar_rdp`, `segmentos`, `_trazo_j`, `_trazo_z`, `_trazo_interrogacion`, `puntos_de_giro`, `rectitud`, `_vaiven`, `_trazo_borrar`, `ReconocedorDinamico` |
-| **6. Dos manos** | `DeteccionMano`, `leer_manos`, `SeguidorManos`, `EstadoMano`, `CanalMano` |
-| **7. Rostro** | `EstimadorPoseCabeza` (`solvePnP`), `PoseCabeza`, `altura_cejas`, `cejas_esperadas`, `calcular_rasgos_faciales`, `DetectorOscilacion`, `AnalizadorFacial` |
-| **8. Escritura y orquestación** | `Estabilizador`, `SostenerMano`, `Escritor`, `ProgresoSuave`, `Traductor` |
-| **9. Voz y hardware** | `VozAsincrona`, `PoliticaVoz`, `_elegir_voz`, `enviar_a_hardware` |
-| **10. Interfaz** | `VistaMano`, `EstadoUI`, `vista_mano`, `mano_principal`, `poner_texto` (con Ñ), `dibujar_mano`, `dibujar_camara`, `dibujar_panel`, `medidor_cejas`, `dibujar_estela` |
-| **11. Principal** | `detectar_manos`, `detectar_rostro`, `main` |
+| **`classifier_hands.py`** | geometría (`dist`, `unitario3`, `angulo3`, `angulo_vectores`, `desde_arriba`), `FiltroOneEuro`, `a_canonica` (espejo), `escala_mano`, `RasgosMano`, `analizar_mano`, `clasificar_pose`, `decidir_q_o_x`, `Trayectoria`, `simplificar_rdp`, `segmentos`, `_trazo_j`, `_trazo_z`, `_trazo_interrogacion`, `puntos_de_giro`, `rectitud`, `_vaiven`, `_trazo_borrar`, `ReconocedorDinamico`, `DeteccionMano`, `leer_manos`, `SeguidorManos`, `EstadoMano`, `CanalMano`, `Estabilizador`, `ProgresoSuave`, `detectar_manos` |
+| **`classifier_face.py`** | `EstimadorPoseCabeza` (`solvePnP`), `PoseCabeza`, `altura_cejas`, `cejas_esperadas`, `calcular_rasgos_faciales`, `DetectorOscilacion`, `AnalizadorFacial`, `detectar_rostro` |
+| **`traductor.py`** | `SostenerMano`, `Escritor`, `Traductor` |
+| **`voice_engine.py`** | `limpiar_texto`, `nombre_hablado`, `ultima_palabra`, `avisar_una_vez`, `VozAsincrona`, `PoliticaVoz`, `_elegir_voz`, `enviar_a_hardware` |
+| **`ui_panel.py`** | `GUIA`, `PISTA_TRAZO`, `COLOR_LADO`, `VistaMano`, `vista_mano`, `mano_principal`, `dibujar_manos`, `dibujar_estela`, `config_web`, `estado_web`, `lineas_diagnostico` |
+| **`main.py`** | `capturar(publicar, comandos, detener)`: captura, acciones de la cola, voz, hardware, JPEG y estado |
+| **`server.py`** | `Difusor`, `ciclo_de_vida` (lifespan), `inicio` (`/`), `transmitir` (`/ws`), `_recibir`, `main` |
+| **`static/app.js`** | `conectar`, `pintarFrame`, `configurar`, `mostrarEstado`, `fase`, `aplicarTema`, `cambiarVista`, `evaluarPractica`, `acierto`, `fallo`, `celebrar`, `lanzarConfeti` |
+
+La división en módulos movió el código sin cambiarlo: 235 de las 236 definiciones son idénticas en su árbol de sintaxis (la otra solo cambia cómo se escribe la misma constante), y con 6 000 fotogramas sintéticos de dos manos y rostro la versión dividida produjo exactamente las mismas salidas que el `main.py` anterior. La migración a la web después reemplazó las ventanas de OpenCV de `ui_panel.py` por la interfaz de `static/`; el reconocimiento (`classifier_*`, `traductor`) no cambió.
 
 ### 11.3 Referencias
 
@@ -905,3 +1178,5 @@ Proyecto/
 - Hochreiter, S. y Schmidhuber, J. (1997). *Long Short-Term Memory*. Neural Computation, 9(8).
 - Documentación de MediaPipe Solutions: https://ai.google.dev/edge/mediapipe/solutions/guide
 - Documentación de pyttsx3: https://pyttsx3.readthedocs.io/
+- FastAPI. *WebSockets*. https://fastapi.tiangolo.com/advanced/websockets/
+- IETF (2011). *RFC 6455: The WebSocket Protocol*. https://www.rfc-editor.org/rfc/rfc6455

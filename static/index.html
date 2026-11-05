@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Traductor LSM</title>
+  <script>
+    // Tema antes de pintar (sin destello): preferencia guardada o oscuro por defecto
+    try { document.documentElement.dataset.theme = localStorage.getItem("lsm-tema") === "light" ? "light" : "dark"; }
+    catch (_) { document.documentElement.dataset.theme = "dark"; }
+  </script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%231c1c1f'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%232ee59d' stroke-width='3' stroke-dasharray='42 60' stroke-linecap='round' transform='rotate(-90 16 16)'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/static/estilos.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= Encabezado ================= -->
+  <header class="barra-sup">
+    <div class="marca">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+      </span>
+      <div>
+        <h1>Traductor LSM</h1>
+        <p>Lengua de Señas Mexicana · tiempo real</p>
+      </div>
+    </div>
+    <div class="sistema">
+      <span class="pastilla" id="voz" data-voz="desactivada" title="Voz (pyttsx3)">
+        <svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        <span id="voz-texto">Voz</span>
+      </span>
+      <button class="interruptor-tema" id="btn-tema" type="button" role="switch" aria-checked="true" title="Tema claro / oscuro (T)" aria-label="Tema oscuro">
+        <span class="pomo" aria-hidden="true"></span>
+        <svg class="sol" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        <svg class="luna" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg>
+      </button>
+      <button class="boton-icono" id="btn-guia" type="button" title="Guía del alfabeto (G)" aria-label="Guía del alfabeto">
+        <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      </button>
+      <button class="boton-detener" id="btn-detener" type="button" title="Cerrar el traductor y apagar la cámara">
+        <svg viewBox="0 0 24 24"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><path d="M12 2v10"/></svg>
+        <span id="detener-texto">Detener</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="escenario">
+
+    <!-- ================= Cámara + subtítulos ================= -->
+    <section class="tarjeta video" id="tarjeta-video">
+      <div class="tarjeta-cabeza">
+        <div class="cabeza-izq">
+          <span class="en-vivo" id="conexion" data-conexion="conectando"><i></i><span id="conexion-texto">Conectando</span></span>
+          <span class="fps"><b id="fps">--</b> FPS</span>
+        </div>
+        <div class="herramientas">
+          <button type="button" data-accion="ESPACIO" title="Espacio (barra espaciadora)">
+            <svg viewBox="0 0 24 24"><path d="M4 10v4h16v-4"/></svg><span>Espacio</span>
+          </button>
+          <button type="button" data-accion="BORRAR" title="Borrar (Backspace)">
+            <svg viewBox="0 0 24 24"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/><path d="m18 9-6 6M12 9l6 6"/></svg><span>Borrar</span>
+          </button>
+          <button type="button" data-accion="LIMPIAR" title="Limpiar todo (C)">
+            <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>Limpiar</span>
+          </button>
+          <span class="separador"></span>
+          <button type="button" class="solo-icono" data-accion="RECALIBRAR" title="Recalibrar rostro neutro (N)" aria-label="Recalibrar rostro">
+            <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+          </button>
+          <button type="button" class="solo-icono" data-accion="DIAGNOSTICO" title="Diagnóstico (D)" aria-label="Diagnóstico">
+            <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="lienzo-marco">
+        <div class="lienzo" id="lienzo">
+          <canvas id="camara" width="640" height="480"></canvas>
+          <div class="chip-mano" id="chip-Izq" data-lado="Izq" hidden><i></i><span class="chip-lado">Izq</span><b class="chip-letra"></b><span class="chip-barra"><span></span></span></div>
+          <div class="chip-mano" id="chip-Der" data-lado="Der" hidden><i></i><span class="chip-lado">Der</span><b class="chip-letra"></b><span class="chip-barra"><span></span></span></div>
+          <div class="sello" id="sello" aria-hidden="true">
+            <svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="24"/><path d="m15 27 7.5 7.5L38 19"/></svg>
+          </div>
+          <pre class="diagnostico" id="diagnostico" hidden></pre>
+          <div class="aviso" id="aviso">
+            <span class="giro" aria-hidden="true"></span>
+            <p id="aviso-texto">Iniciando cámara…</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subtítulos cinematográficos, centrados bajo el video -->
+      <div class="subtitulos vacio" id="texto" aria-live="polite"><span id="texto-contenido"></span><span class="cursor" aria-hidden="true"></span></div>
+    </section>
+
+    <!-- ================= Panel lateral ================= -->
+    <aside class="panel">
+      <div class="pestanas" role="tablist" aria-label="Modo">
+        <button type="button" role="tab" id="tab-traducir" data-vista="traducir" aria-selected="true">
+          <svg viewBox="0 0 24 24"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>Traducir
+        </button>
+        <button type="button" role="tab" id="tab-practica" data-vista="practica" aria-selected="false">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>Práctica
+        </button>
+        <span class="pestana-indicador" aria-hidden="true"></span>
+      </div>
+
+      <!-- ---------- Vista: Traducir ---------- -->
+      <section class="tarjeta sena" id="sena" data-estado="ninguna" data-fase="nada">
+        <div class="anillo">
+          <svg viewBox="0 0 240 240" aria-hidden="true">
+            <circle class="pista" cx="120" cy="120" r="104"/>
+            <circle class="progreso" id="anillo" cx="120" cy="120" r="104"/>
+          </svg>
+          <div class="letra" id="letra">–</div>
+        </div>
+        <span class="lado-etiqueta" id="lado">Sin mano</span>
+        <p class="estado-texto" id="estado-texto">Muestra una seña a la cámara con cualquier mano</p>
+        <div class="como" id="como" hidden>
+          <span class="rotulo">Cómo se hace</span>
+          <p id="como-desc"></p>
+          <p class="como-mov" id="como-mov"></p>
+        </div>
+      </section>
+
+      <!-- ---------- Vista: Práctica ---------- -->
+      <section class="tarjeta practica" id="practica" hidden>
+        <div class="practica-cabeza">
+          <div class="segmentado" role="tablist" aria-label="Qué practicar">
+            <button type="button" data-modo-practica="letras" aria-selected="true">Letras</button>
+            <button type="button" data-modo-practica="palabras" aria-selected="false">Palabras</button>
+          </div>
+          <div class="marcador">
+            <span title="Aciertos"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><b id="aciertos">0</b></span>
+            <span title="Racha actual"><svg viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg><b id="racha">0</b></span>
+            <span title="Mejor racha"><svg viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2z"/></svg><b id="mejor">0</b></span>
+          </div>
+        </div>
+
+        <!-- Selector de letra -->
+        <div class="selector" id="selector-letras">
+          <button type="button" class="flecha" id="letra-anterior" aria-label="Letra anterior"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+          <div class="tira" id="tira" role="listbox" aria-label="Letras"></div>
+          <button type="button" class="flecha" id="letra-siguiente" aria-label="Letra siguiente"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+          <button type="button" class="flecha" id="letra-azar" title="Letra al azar" aria-label="Letra al azar"><svg viewBox="0 0 24 24"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg></button>
+        </div>
+
+        <!-- Selector de palabra -->
+        <div class="selector-palabras" id="selector-palabras" hidden>
+          <div class="chips" id="chips-palabras"></div>
+          <form class="form-palabra" id="form-palabra" autocomplete="off">
+            <input id="input-palabra" type="text" maxlength="12" placeholder="Otra palabra…" aria-label="Palabra para practicar">
+            <button type="submit">Practicar</button>
+          </form>
+          <div class="fichas" id="fichas" aria-label="Progreso de la palabra"></div>
+        </div>
+
+        <!-- Tarjeta de referencia (gira al acertar) -->
+        <div class="ref" id="ref">
+          <div class="ref-interior">
+            <div class="ref-cara ref-frente">
+              <div class="ref-imagen" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+                <span class="ref-letra" id="ref-letra">A</span>
+                <small>Imagen de la seña</small>
+              </div>
+              <div class="ref-texto">
+                <span class="ref-tipo" id="ref-tipo" data-tipo="estatica">Estática</span>
+                <strong id="ref-nombre">Letra A</strong>
+                <p id="ref-desc"></p>
+                <p class="ref-mov" id="ref-mov"></p>
+              </div>
+            </div>
+            <div class="ref-cara ref-dorso">
+              <svg class="check" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="m15 27 7.5 7.5L38 19"/></svg>
+              <strong id="exito-titulo">¡Correcto!</strong>
+              <span id="exito-sub">Racha 1</span>
+            </div>
+          </div>
+          <div class="confeti" id="confeti" aria-hidden="true"></div>
+        </div>
+
+        <!-- Retroalimentación en vivo -->
+        <div class="retro" id="retro" data-tono="nada" aria-live="polite">
+          <div class="retro-fila"><i class="retro-punto"></i><span id="retro-texto">Muestra tu mano a la cámara</span></div>
+          <span class="retro-barra"><span id="retro-barra"></span></span>
+        </div>
+      </section>
+
+      <!-- ---------- Manos (ambas vistas) ---------- -->
+      <section class="manos">
+        <div class="mano-mini" id="mini-Izq" data-lado="Izq" data-estado="ninguna">
+          <i class="mini-punto"></i>
+          <div class="mini-info"><span class="mini-lado">Izquierda</span><span class="mini-estado">Sin detectar</span></div>
+          <b class="mini-letra">–</b>
+          <span class="mini-barra"><span></span></span>
+        </div>
+        <div class="mano-mini" id="mini-Der" data-lado="Der" data-estado="ninguna">
+          <i class="mini-punto"></i>
+          <div class="mini-info"><span class="mini-lado">Derecha</span><span class="mini-estado">Sin detectar</span></div>
+          <b class="mini-letra">–</b>
+          <span class="mini-barra"><span></span></span>
+        </div>
+      </section>
+
+      <!-- ---------- Rostro (vista Traducir) ---------- -->
+      <section class="tarjeta rostro" id="rostro" data-modo="SIN_ROSTRO">
+        <div class="rostro-fila">
+          <span class="rostro-icono"><svg viewBox="0 0 24 24" id="rostro-svg"></svg></span>
+          <div class="rostro-info">
+            <span class="rotulo">Rostro</span>
+            <strong id="rostro-titulo">Sin rostro</strong>
+            <span class="rostro-sub" id="rostro-sub">Colócate frente a la cámara</span>
+          </div>
+        </div>
+        <div class="rostro-carga" id="rostro-carga" hidden><span></span></div>
+        <div class="cejas" id="cejas" hidden>
+          <div class="cejas-cabeza"><span>Cejas</span><b id="cejas-valor">x1.00</b></div>
+          <div class="cejas-medidor"><span id="cejas-barra"></span><i id="cejas-umbral"></i></div>
+          <span class="cabeza" id="cabeza"></span>
+        </div>
+      </section>
+    </aside>
+  </main>
+</div>
+
+<!-- ================= Guía del alfabeto ================= -->
+<div class="guia-fondo" id="guia-fondo" hidden></div>
+<aside class="guia" id="guia" aria-hidden="true">
+  <div class="guia-cabeza">
+    <div>
+      <h2>Guía del alfabeto</h2>
+      <p>Sirve cualquier mano. <span class="etiqueta-mov">Movimiento</span> = lleva trazo. Toca una letra para practicarla.</p>
+    </div>
+    <button class="boton-icono" id="guia-cerrar" type="button" aria-label="Cerrar guía">
+      <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <ul class="guia-lista" id="guia-lista"></ul>
+  <p class="guia-pie">Rostro: cejas arriba 1.5 s = <b>?</b> · negar = borrar · asentir = confirmar y leer</p>
+</aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
