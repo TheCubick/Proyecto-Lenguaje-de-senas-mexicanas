@@ -1,9 +1,9 @@
 """Servidor web local del Traductor LSM: sirve la interfaz (static/), el estado por WebSocket y el video por MJPEG.
 
-Ejecutar:  .\\venv\\Scripts\\python.exe server.py   -> abre http://localhost:5000 en el navegador predeterminado.
+Ejecutar:  .\\venv\\Scripts\\python.exe python\\server.py   -> abre http://localhost:5000 en el navegador predeterminado.
 - /ws: por cada frame procesado, UN mensaje de texto (JSON: señas, texto, rostro y coordenadas de las manos,
   ~0.5-1.6 KB). El navegador manda acciones {"accion": "ESPACIO" | "BORRAR" | "LIMPIAR" | "DIAGNOSTICO" |
-  "RECALIBRAR" | "SALIR"}.
+  "RECALIBRAR" | "PROBAR_VOZ" | "GUARDAR_MUESTRA" | "SALIR"} y {"accion": "GESTO", "objetivo": frase | null}.
 - /video_feed: vista previa de la cámara (multipart/x-mixed-replace, JPEG calidad 70) para un <img>. Sale del
   fotograma más nuevo SIN esperar a MediaPipe; el navegador dibuja el esqueleto encima con los datos de /ws.
 Python es el único dueño de la cámara (en Windows el navegador no siempre puede compartirla). Solo 127.0.0.1.
@@ -11,6 +11,7 @@ Python es el único dueño de la cámara (en Windows el navegador no siempre pue
 import asyncio
 import json
 import queue
+import sys
 import threading
 import webbrowser
 from contextlib import asynccontextmanager
@@ -27,8 +28,8 @@ from ui_panel import config_web
 
 HOST, PUERTO = "127.0.0.1", 5000
 URL = f"http://localhost:{PUERTO}"
-ESTATICOS = Path(__file__).with_name("static")
-ACCIONES = set(ACCIONES_TEXTO) | {"DIAGNOSTICO", "RECALIBRAR"}
+ESTATICOS = Path(__file__).resolve().parent.parent / "static"   # python/ y static/ son carpetas hermanas
+ACCIONES = set(ACCIONES_TEXTO) | {"DIAGNOSTICO", "RECALIBRAR", "PROBAR_VOZ", "GUARDAR_MUESTRA"}
 
 
 class Difusor:
@@ -117,13 +118,17 @@ async def _recibir(ws):
     """Acciones del navegador -> cola del hilo de proceso (el único que toca el texto)."""
     while True:
         try:
-            accion = json.loads(await ws.receive_text()).get("accion")
+            mensaje = json.loads(await ws.receive_text())
+            accion = mensaje.get("accion")
         except (ValueError, AttributeError):
             continue
         except (WebSocketDisconnect, RuntimeError):
             return
         if accion == "SALIR" and servidor is not None:
             servidor.should_exit = True
+        elif accion == "GESTO":              # objetivo del Modo Práctica (None = ninguno); se valida en gestos.py
+            objetivo = mensaje.get("objetivo")
+            comandos.put(("GESTO", objetivo if isinstance(objetivo, str) else None))
         elif accion in ACCIONES:
             comandos.put(accion)
 
@@ -147,8 +152,31 @@ async def transmitir(ws: WebSocket):
         recibir.cancel()
 
 
+def sin_ahorro_de_energia():
+    """Windows: saca al proceso del estrangulamiento de energía (EcoQoS). En batería y con la consola en segundo
+    plano (el navegador al frente), Windows lo manda a núcleos de bajo consumo. Medido (2026-11-05, en batería):
+    MediaPipe Hands 47 ms por fotograma por defecto, 84 ms estrangulado y 23 ms con esto."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class Estado(ctypes.Structure):              # PROCESS_POWER_THROTTLING_STATE
+        _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    # ControlMask EXECUTION_SPEED (0x1) | IGNORE_TIMER_RESOLUTION (0x4) con StateMask 0 = nunca estrangular
+    estado = Estado(1, 0x1 | 0x4, 0)
+    if not k32.SetProcessInformation(k32.GetCurrentProcess(), 4, ctypes.byref(estado), ctypes.sizeof(estado)):
+        print(f"[AVISO] No se pudo quitar el ahorro de energía (error {ctypes.get_last_error()}): "
+              "conecta la laptop a la corriente si va lenta.")
+
+
 def main():
     global servidor
+    sin_ahorro_de_energia()
     servidor = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PUERTO, log_level="warning",
                                              timeout_graceful_shutdown=2))
     print(f"Traductor LSM en {URL}  (Ctrl+C o el botón Detener para salir)")

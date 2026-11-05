@@ -21,8 +21,16 @@ V_QUIETO = 1.2                 # Velocidad de la palma (escalas/s) por encima de
 MAX_MANOS = 2             # MediaPipe Hands (max_num_hands). Con 2, mientras solo hay una mano a la vista MediaPipe
                           # busca la segunda en cada frame: medido, el tiempo de las manos pasa de 37 a 76 ms en
                           # esta laptop en batería. En una PC lenta, 1 = más FPS (pero solo una mano a la vez)
+MODELO_MANOS = 1          # model_complexity. Medido (2026-11-05, 640x480, sin ahorro de energía): 1 = 23 ms, 0 = 16 ms
+                          # pero 0 detecta 13 % menos manos, cambia la letra en 16-30 % de los fotogramas de los
+                          # videos del alfabeto (las reglas se calibraron con 1) y duplica la distancia DTW al dataset
+                          # (extraído con 1). Reducir la imagen antes de MediaPipe no ahorra nada (480: 23.7 ms; ya la
+                          # reduce por dentro) y a 320 pierde manos
+AREA_MIN_MANO = 0.001     # caja de la mano < 0.1 % de la imagen = mano de alguien al fondo: se ignora. Medido: las
+                          # manos de los videos del dataset (señante a cuerpo entero) van de 0.15 % a mediana 1.1 %;
+                          # 5 % descartaría casi todas
 LADOS = ("Izq", "Der")
-MP_A_LADO = {"Left": "Izq", "Right": "Der"}  # La imagen se espeja ANTES de procesarla, así que la etiqueta de
+MP_A_LADO ={"Left": "Izq", "Right": "Der"}  # La imagen se espeja ANTES de procesarla, así que la etiqueta de
                                              # MediaPipe (multi_handedness) es la mano real de la persona
 DUPLICADO_DIST = 0.35       # Dos detecciones a menos de esto (en tamaños de mano) son la misma mano repetida
 CONTINUIDAD_DIST = 1.2      # Una mano sigue en su ranura si aparece a menos de esto de donde estaba...
@@ -703,6 +711,8 @@ def leer_manos(resultado, ancho, alto):
     salida = []
     for k, lm in enumerate(resultado.multi_hand_landmarks):
         img = np.array([(l.x * ancho, l.y * alto, l.z * ancho) for l in lm.landmark], dtype=float)
+        if np.ptp(img[:, 0]) * np.ptp(img[:, 1]) < AREA_MIN_MANO * ancho * alto:   # diminuta: alguien al fondo
+            continue
         mundo = (np.array([(l.x, l.y, l.z) for l in mundos[k].landmark], dtype=float) if k < len(mundos)
                  else img / max(ancho, 1))
         etiqueta = resultado.multi_handedness[k].classification[0]

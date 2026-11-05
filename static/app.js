@@ -40,6 +40,8 @@ let detenido = false;
 let guia = {};                 // clave -> {clave, desc, mov, li}
 let claves = [];               // orden del alfabeto (para la tira de práctica)
 let bases = {};                // seña con movimiento -> configuraciones base (J <- I, Y)
+let gestos = [];               // palabras y frases con muestras en dataset/ (práctica dinámica)
+let diagGesto = null;          // última evaluación del reconocedor de frases: { texto, tono }
 let segundos = 1.5;
 let umbralCejas = 1.08;
 let textoPrevio = null;
@@ -85,6 +87,9 @@ function aviso(texto, error = false) {
 function nombreSena(s) {
   return s === "ESPACIO" ? "Espacio" : s === "BORRAR" ? "Borrar" : s;
 }
+function textoGesto(id) {                // "mi_nombre_es" -> "MI NOMBRE ES"
+  return id.replaceAll("_", " ").toUpperCase();
+}
 // Fase de color del hold-to-type: 0-50 % neutro, 50-99 % procesando, 100 % éxito
 function fase(estado, progreso) {
   if (estado === "registrada") return "listo";
@@ -105,6 +110,16 @@ function aplicarTema(tema) {
                   exito: css.getPropertyValue("--verde").trim() };
   dibujado = null;                                    // redibujar el esqueleto con los colores nuevos
 }
+// Clic (o Enter) en la pastilla de voz: el motor dice "Voz activada" para comprobar las bocinas
+function probarVoz() {
+  enviar("PROBAR_VOZ");
+  reiniciarAnimacion($("voz"), "sube");
+}
+$("voz").addEventListener("click", probarVoz);
+$("voz").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); probarVoz(); }
+});
+
 $("btn-tema").addEventListener("click", () =>
   aplicarTema(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 aplicarTema(document.documentElement.dataset.theme === "light" ? "light" : "dark");
@@ -300,8 +315,9 @@ function cuadro() {
     if (ahora - tLatencia > 250 && latencia !== null) {   // texto 4 veces por segundo: legible, sin parpadeo
       tLatencia = ahora;
       poner($("latencia"), String(Math.round(latencia)));
-      $("rendimiento").title = `Latencia captura → dibujo: ${Math.round(latencia)} ms · proceso del motor: ` +
-        `${ultimo.tiempos.proceso_ms} ms · fotogramas viejos descartados: ${ultimo.tiempos.descartados}`;
+      const t = ultimo.tiempos;
+      $("rendimiento").title = `Latencia captura → dibujo: ${Math.round(latencia)} ms · proceso: ${t.proceso_ms} ms ` +
+        `(manos ${t.manos_ms}, rostro ${t.rostro_ms}, motor ${t.motor_ms}) · fotogramas viejos descartados: ${t.descartados}`;
     }
   }
   dibujado = ultimo;
@@ -339,7 +355,11 @@ function configurar(cfg) {
     guia[g.clave] = { ...g, li };
   }
   construirTira();
+  gestos = cfg.gestos ?? [];
+  if (!gestos.includes(practica.gesto)) practica.gesto = gestos[0] ?? null;
+  construirChipsGestos();
   actualizarReferencia();
+  sincronizarGesto();                   // en cada conexión: el motor pudo reiniciarse sin objetivo
 }
 
 function fraccionCejas(r) {
@@ -449,8 +469,15 @@ function mostrarEstado(e) {
     const caja = $("texto");
     const cont = $("texto-contenido");
     const crecio = textoPrevio !== null && e.texto.length > textoPrevio.length && e.texto.startsWith(textoPrevio);
+    const frase = e.gesto?.resultado?.escrito;          // frase dinámica: entra completa y se resalta
+    const i = frase ? e.texto.lastIndexOf(frase) : -1;
     cont.textContent = "";
-    if (crecio) {
+    if (i >= 0) {
+      const resaltada = document.createElement("span");
+      resaltada.className = "frase-confirmada";
+      resaltada.textContent = frase;
+      cont.append(e.texto.slice(0, i), resaltada, e.texto.slice(i + frase.length));
+    } else if (crecio) {
       const nuevo = document.createElement("span");
       nuevo.className = "nuevo";
       nuevo.textContent = e.texto.slice(textoPrevio.length);
@@ -462,6 +489,8 @@ function mostrarEstado(e) {
     caja.scrollTop = caja.scrollHeight;
     textoPrevio = e.texto;
   }
+
+  mostrarDiagnosticoGesto(e.gesto);
 
   // --- Sistema ---
   poner($("fps"), e.fps.toFixed(0));
@@ -476,13 +505,17 @@ function mostrarEstado(e) {
 }
 
 // =====================================================================================
-// Modo Práctica: elige una letra o una palabra; se valida con lo que manda MediaPipe
+// Modo Práctica: una letra, una palabra para deletrear o una frase con movimiento (gesto del dataset).
+// Letras y deletreo se validan con los registros del hold-to-type; las frases, con el reconocedor de gestos del
+// motor (gestos.py), que evalúa el movimiento al bajar las manos y manda el resultado en el estado.
 // =====================================================================================
 const practica = {
   activa: false,
-  modo: "letras",              // "letras" | "palabras"
+  modo: "letras",              // "letras" | "palabras" (deletreo) | "gestos" (frases dinámicas)
   letra: "A",
   palabra: PALABRAS[0],
+  gesto: null,
+  mensajeHasta: 0,             // el resultado de un gesto se queda a la vista hasta este instante (ms)
   indice: 0,
   aciertos: 0,
   racha: 0,
@@ -493,7 +526,14 @@ const practica = {
 };
 
 function objetivo() {
+  if (practica.modo === "gestos") return practica.gesto;
   return practica.modo === "letras" ? practica.letra : [...practica.palabra][practica.indice];
+}
+
+// El motor solo evalúa gestos mientras haya un objetivo dinámico a la vista
+function sincronizarGesto() {
+  const obj = practica.activa && practica.modo === "gestos" ? practica.gesto : null;
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ accion: "GESTO", objetivo: obj }));
 }
 
 function normalizarPalabra(t) {
@@ -514,6 +554,7 @@ function cambiarVista(vista) {
   $("tarjeta-video").classList.remove("coincide");
   guardar("lsm-vista", vista);
   if (practica.activa) { actualizarReferencia(); centrarLetra(); }
+  sincronizarGesto();
 }
 for (const b of document.querySelectorAll("[data-vista]")) b.addEventListener("click", () => cambiarVista(b.dataset.vista));
 
@@ -525,9 +566,12 @@ function cambiarModo(modo) {
   }
   $("selector-letras").hidden = modo !== "letras";
   $("selector-palabras").hidden = modo !== "palabras";
+  $("selector-gestos").hidden = modo !== "gestos";
   practica.indice = 0;
+  practica.mensajeHasta = 0;
   actualizarReferencia();
   if (modo === "letras") centrarLetra();
+  sincronizarGesto();
 }
 for (const b of document.querySelectorAll("[data-modo-practica]")) {
   b.addEventListener("click", () => cambiarModo(b.dataset.modoPractica));
@@ -618,6 +662,34 @@ $("form-palabra").addEventListener("submit", (ev) => {
   elegirPalabra(p);
 });
 
+function construirChipsGestos() {
+  const chips = $("chips-gestos");
+  chips.textContent = "";
+  $("sin-gestos").hidden = gestos.length > 0;
+  for (const g of gestos) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.gesto = g;
+    b.textContent = textoGesto(g);
+    b.addEventListener("click", () => elegirGesto(g));
+    chips.append(b);
+  }
+  marcarChipsGestos();
+}
+function marcarChipsGestos() {
+  for (const b of $("chips-gestos").children) {
+    b.setAttribute("aria-selected", String(b.dataset.gesto === practica.gesto));
+    b.classList.toggle("dominada", practica.dominadas.has(b.dataset.gesto));
+  }
+}
+function elegirGesto(g) {
+  practica.gesto = g;
+  practica.mensajeHasta = 0;
+  marcarChipsGestos();
+  actualizarReferencia();
+  sincronizarGesto();
+}
+
 function pintarFichas() {
   const fichas = $("fichas");
   fichas.textContent = "";
@@ -633,16 +705,30 @@ function pintarFichas() {
 // --- tarjeta de referencia ---
 function actualizarReferencia() {
   const obj = objetivo();
+  if (practica.modo === "gestos") return referenciaGesto(obj);
   const g = guia[obj];
   if (practica.modo === "palabras") pintarFichas();
   if (!g) return;
   const conMovimiento = !!g.mov;
+  $("ref-letra").removeAttribute("data-largo");
   poner($("ref-letra"), nombreSena(obj));
   poner($("ref-nombre"), obj.length > 1 ? nombreSena(obj) : obj === "?" ? "Pregunta (?)" : `Letra ${obj}`);
   atributo($("ref-tipo"), "data-tipo", conMovimiento ? "movimiento" : "estatica");
   poner($("ref-tipo"), conMovimiento ? "Con movimiento" : "Estática");
   poner($("ref-desc"), g.desc);
   poner($("ref-mov"), conMovimiento ? g.mov : `Sostenla quieta ${segundos.toLocaleString("es-MX")} s`);
+}
+
+function referenciaGesto(g) {
+  atributo($("ref-tipo"), "data-tipo", "dinamica");
+  poner($("ref-tipo"), "Dinámica");
+  $("ref-letra").setAttribute("data-largo", "");
+  poner($("ref-letra"), g ? textoGesto(g) : "—");
+  poner($("ref-nombre"), g ? textoGesto(g) : "Sin frases");
+  poner($("ref-desc"), g ? "Seña en movimiento, comparada con las ejecuciones de los videos del dataset."
+    : "Extrae videos con video_extractor.py para practicar frases.");
+  poner($("ref-mov"), "Empieza con las manos abajo, haz el movimiento completo y continuo frente a la cámara " +
+    "y vuelve a bajarlas: al bajarlas se evalúa.");
 }
 
 // --- validación con los datos del WebSocket ---
@@ -655,6 +741,7 @@ function evaluarPractica(e) {
     practica.previo[l] = { estado: m.estado, sena: m.sena };
   }
   if (!practica.activa) return;
+  if (practica.modo === "gestos") return evaluarGesto(e);
 
   const obj = objetivo();
   if (!practica.ocupada) {
@@ -689,6 +776,76 @@ function evaluarPractica(e) {
   $("tarjeta-video").classList.toggle("coincide", tono === "bien");
 }
 
+// Diagnóstico del reconocedor de frases (calibración): la última evaluación queda a la vista bajo los subtítulos
+function mostrarDiagnosticoGesto(g) {
+  const el = $("gesto-diag");
+  el.hidden = !g;
+  if (!g) return;
+  const r = g.resultado;
+  if (r && !r.mejor) {
+    diagGesto = { tono: "no", texto: `Gesto descartado: ${r.motivo} · cierre: ${r.cierre}` };
+  } else if (r && r.objetivo) {                 // práctica: cuenta si el objetivo quedó como el más cercano
+    diagGesto = { tono: r.acierto ? "ok" : "no",
+      texto: `Candidato: ${textoGesto(r.mejor)} | Dist: ${r.distancia.toFixed(2)} | Objetivo: ${textoGesto(r.objetivo)} ` +
+             `(${r.distancia_objetivo.toFixed(2)}) | Estado: ${r.acierto ? "ACEPTADA" : "RECHAZADA, " + r.motivo} · ${r.cierre}` };
+  } else if (r) {
+    diagGesto = { tono: r.aceptado ? "ok" : "no",
+      texto: `Candidato: ${textoGesto(r.mejor)} | Dist: ${r.distancia.toFixed(2)} | Sep: ${r.separacion.toFixed(2)} | ` +
+             `Estado: ${r.aceptado ? "ACEPTADA" : "RECHAZADA, " + r.motivo} · ${r.cierre}` };
+  }
+  if (g.aviso) diagGesto = { tono: g.aviso.startsWith("Guardada") ? "ok" : "no", texto: g.aviso };
+  const boton = $("guardar-muestra");
+  if (boton.disabled !== !g.muestra) boton.disabled = !g.muestra;
+  poner($("muestras-propias"), `${g.propias} ${g.propias === 1 ? "muestra tuya" : "muestras tuyas"}`);
+  const grabando = g.fase === "grabando" ?`● Grabando ${g.segundos.toFixed(1)} s${g.pausa ? " (letras en pausa)" : ""}` : "";
+  const ultimo = diagGesto ? diagGesto.texto : "Frases: haz el movimiento y baja las manos o haz una pausa";
+  atributo(el, "data-tono", grabando ? "grabando" : diagGesto ? diagGesto.tono : "nada");
+  poner(el, grabando ? `${grabando}  ·  último: ${ultimo}` : ultimo);
+}
+
+// Frases: el motor graba mientras las manos están arriba y evalúa al bajarlas (e.gesto.resultado, una vez)
+function evaluarGesto(e) {
+  const g = e.gesto;
+  const r = g?.resultado;
+  if (r && r.mejor && r.objetivo === practica.gesto && !practica.ocupada) {
+    if (r.acierto) acierto(r.objetivo);
+    else falloGesto(r);
+  }
+  const retro = $("retro");
+  let tono = "nada", texto = "Sube las manos y haz la frase completa", pct = 0;
+  if (!g) {
+    texto = gestos.length ? "Conectando con el reconocedor de gestos…" : "Sin frases en dataset/";
+  } else if (g.fase === "grabando") {
+    tono = "casi";
+    texto = `Grabando el movimiento… ${g.segundos.toLocaleString("es-MX")} s · baja las manos al terminar`;
+    pct = Math.min(100, (g.segundos / 4) * 100);
+  }
+  if (Date.now() < practica.mensajeHasta) return;      // deja a la vista el resultado de la evaluación
+  atributo(retro, "data-tono", tono);
+  atributo(retro, "data-fase", tono === "casi" ? "medio" : "nada");
+  poner($("retro-texto"), texto);
+  $("retro-barra").style.width = `${pct}%`;
+  $("tarjeta-video").classList.toggle("coincide", tono === "casi");
+}
+
+// Muestra propia: el motor guarda la última ejecución evaluada en dataset/<frase>/pablo_seq_XX.npy y la usa ya
+function guardarMuestra() {
+  enviar("GUARDAR_MUESTRA");                 // la respuesta llega como e.gesto.aviso en el cuadro de diagnóstico
+}
+$("guardar-muestra").addEventListener("click", guardarMuestra);
+
+function falloGesto(r) {
+  practica.racha = 0;
+  poner($("racha"), "0");
+  reiniciarAnimacion($("ref"), "sacudida");
+  atributo($("retro"), "data-tono", "otra");
+  poner($("retro-texto"), `Pareció «${textoGesto(r.mejor)}»; buscamos «${textoGesto(r.objetivo)}». Inténtalo otra vez`);
+  $("retro-barra").style.width = "0%";
+  $("tarjeta-video").classList.remove("coincide");
+  practica.mensajeHasta = Date.now() + 2500;
+  bloquear(700);
+}
+
 function sumar(id, valor) {
   const el = $(id);
   el.textContent = valor;
@@ -708,6 +865,12 @@ function acierto(obj) {
   practica.dominadas.add(obj);
   marcarTira();
 
+  if (practica.modo === "gestos") {
+    marcarChipsGestos();
+    practica.mensajeHasta = 0;
+    celebrar("¡Gesto correcto!", `${textoGesto(obj)} · racha ${practica.racha}`, 2000);
+    return;
+  }
   if (practica.modo === "letras") {
     celebrar("¡Correcto!", `${nombreSena(obj)} · racha ${practica.racha}`, 1800);
     return;
@@ -828,7 +991,8 @@ document.addEventListener("keydown", (ev) => {
   if (tecla === "Escape") { abrirGuia(false); return; }
   if (tecla === "g" || tecla === "t") {
     if (!ev.repeat) {
-      if (tecla === "g") abrirGuia();
+      if (tecla === "g" && practica.activa && practica.modo === "gestos") guardarMuestra();   // ahí la guía no aplica
+      else if (tecla === "g") abrirGuia();
       else aplicarTema(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
     }
     ev.preventDefault();

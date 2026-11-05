@@ -2,7 +2,7 @@
 
 Motor: procesa siempre el fotograma más reciente de la cámara (camara.py, hilo propio) y publica el estado JSON:
 señas, texto, rostro y coordenadas de las manos. El video para la vista previa lo transmite server.py por
-/video_feed (MJPEG) desde la misma cámara; el navegador dibuja el esqueleto encima. Ejecutar con `python server.py`.
+/video_feed (MJPEG) desde la misma cámara; el navegador dibuja el esqueleto encima. Ejecutar con `python python/server.py`.
 
 Módulos:  camara.py            captura en un hilo propio (único dueño de la cámara) y JPEG de la vista previa
             classifier_hands.py  manos: lateralidad, One-Euro, rasgos 3D, alfabeto estático y trazos
@@ -20,7 +20,7 @@ import cv2
 import mediapipe as mp
 
 from classifier_face import PROCESAR_ROSTRO_CADA, detectar_rostro
-from classifier_hands import LADOS, MAX_MANOS, ProgresoSuave, detectar_manos
+from classifier_hands import LADOS, MAX_MANOS, MODELO_MANOS, ProgresoSuave, detectar_manos
 from traductor import Traductor
 from ui_panel import estado_web, mano_principal, vista_mano
 from voice_engine import VOZ_HABILITADA, PoliticaVoz, VozAsincrona, enviar_a_hardware, limpiar_texto
@@ -41,7 +41,9 @@ def capturar(cam, publicar, comandos, detener):
 
     cam: CamaraReciente (la abre y la cierra server.py, que también la usa para el video); publicar(estado_json):
     entrega el estado de cada frame; comandos: cola con acciones de la interfaz ("ESPACIO", "BORRAR", "LIMPIAR",
-    "DIAGNOSTICO", "RECALIBRAR"); detener: threading.Event que termina el bucle."""
+    "DIAGNOSTICO", "RECALIBRAR", "PROBAR_VOZ", "GUARDAR_MUESTRA", o ("GESTO", palabra | None) para el Modo
+    Práctica); detener: threading.Event que
+    termina el bucle."""
     if not cam.activa:
         _error(publicar, "El motor no pudo abrir la cámara. Verifica que esté conectada y que otra app no la use.")
         return
@@ -60,7 +62,7 @@ def capturar(cam, publicar, comandos, detener):
 
     print("Traductor LSM iniciado. Mantén la cara neutra un momento para calibrar.")
 
-    with mp_hands.Hands(static_image_mode=False, max_num_hands=MAX_MANOS,
+    with mp_hands.Hands(static_image_mode=False, max_num_hands=MAX_MANOS, model_complexity=MODELO_MANOS,
                         min_detection_confidence=0.7, min_tracking_confidence=0.6) as hands, \
             mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=False,
                                   min_detection_confidence=0.5, min_tracking_confidence=0.5) as face_mesh:
@@ -88,21 +90,31 @@ def capturar(cam, publicar, comandos, detener):
                         accion = comandos.get_nowait()
                     except queue.Empty:
                         break
-                    if accion in ACCIONES_TEXTO:
+                    if isinstance(accion, tuple) and accion[0] == "GESTO":
+                        traductor.gestos.poner_objetivo(accion[1])
+                    elif accion in ACCIONES_TEXTO:
                         escritor.ejecutar(accion, ahora)
                     elif accion == "DIAGNOSTICO":
                         diagnostico = not diagnostico
                     elif accion == "RECALIBRAR":
                         analizador.recalibrar()
+                    elif accion == "PROBAR_VOZ":       # clic en la pastilla de voz: comprobar las bocinas
+                        voz.decir("Voz activada", "palabra")
+                    elif accion == "GUARDAR_MUESTRA":  # tecla G en Práctica > Frases: muestra propia al dataset
+                        traductor.gestos.guardar_muestra()
 
                 # --- Percepción (cada canal tolera fallos por separado) ---
+                t_manos = time.perf_counter()
                 detecciones = detectar_manos(hands, rgb, ancho, alto)
+                t_rostro = time.perf_counter()
                 procesar_rostro = n_frame % PROCESAR_ROSTRO_CADA == 0
                 if procesar_rostro:
                     rostro = detectar_rostro(face_mesh, rgb, ancho, alto)
 
                 # --- Manos -> señas -> texto, y rostro -> gestos (un canal independiente por mano) ---
+                t_motor = time.perf_counter()
                 manos, _ = traductor.paso(detecciones, rostro, ahora, (ancho, alto), procesar_rostro)
+                t_fin = time.perf_counter()
 
                 # --- Voz y hardware: reaccionan a lo que ocurrió en este frame ---
                 for ev in escritor.sacar_eventos():
@@ -129,9 +141,13 @@ def capturar(cam, publicar, comandos, detener):
                 # --- Salida: solo el estado (coordenadas incluidas); el navegador pone el video ---
                 tiempos = {"n": visto, "captura_ms": round(t_captura * 1000),
                            "proceso_ms": round((time.perf_counter() - t_inicio) * 1000, 1),
+                           "manos_ms": round((t_rostro - t_manos) * 1000, 1),
+                           "rostro_ms": round((t_motor - t_rostro) * 1000, 1),
+                           "motor_ms": round((t_fin - t_motor) * 1000, 1),
                            "descartados": cam.descartados}
                 estado = estado_web(traductor, manos, vistas, principal, progreso, fps, voz.estado, (ancho, alto),
                                     diagnostico, tiempos)
+                estado["gesto"] = traductor.gestos.web(ahora)    # gesto en curso y, una vez, su evaluación
                 publicar(json.dumps(estado, ensure_ascii=False, separators=(",", ":")))
         finally:
             voz.cerrar()

@@ -5,6 +5,7 @@ from typing import Optional
 
 from classifier_face import AnalizadorFacial
 from classifier_hands import LADOS, LETRAS_TIPEABLES, CanalMano, SeguidorManos, otro_lado
+from gestos import ReconocedorGestos, texto_frase
 
 SEGUNDOS_PARA_ESCRIBIR = 1.5   # Tiempo que hay que sostener una seña estática QUIETA para registrarla
 
@@ -81,6 +82,16 @@ class Escritor:
             self.eventos.append(("letra", accion, lado))
         self.ultimo_registro = ahora
 
+    def escribir_frase(self, frase, desde, ahora):
+        """Frase dinámica completa: reemplaza lo escrito desde la posición `desde` (letras sueltas que se colaron
+        mientras se hacía el gesto) y la cierra con un espacio, como una palabra confirmada."""
+        base = self.texto[:min(desde, len(self.texto))]
+        if base and not base.endswith(" "):
+            base += " "
+        self.texto = base + frase + " "
+        self.eventos.append(("frase", frase))
+        self.ultimo_registro = ahora
+
     def registrar_dinamico(self, lado, gesto, ahora, pose):
         """Registra una seña con movimiento (J, K, Ñ, Q, X, Z, BORRAR, ?) en cuanto se completa el trazo."""
         self.ejecutar({"?": "PREGUNTA"}.get(gesto, gesto), ahora, lado)
@@ -124,19 +135,45 @@ class Traductor:
         self.canales = {lado: CanalMano(lado) for lado in LADOS}
         self.escritor = Escritor(SEGUNDOS_PARA_ESCRIBIR)
         self.analizador = AnalizadorFacial()
+        self.gestos = ReconocedorGestos()      # palabras y frases del dataset (gestos.py)
+        self.marca_texto = 0                   # largo del texto al empezar el movimiento del gesto en curso
+        self.marca_cierre = 0                  # la del gesto que se cerró (su DTW llega unos fotogramas después)
 
     def paso(self, detecciones, rostro, ahora, tamano, procesar_rostro=True):
-        """Procesa un frame. Devuelve ({lado: EstadoMano}, gesto facial o None)."""
+        """Procesa un frame. Devuelve ({lado: EstadoMano}, gesto facial o None).
+
+        Gestos dinámicos (frases): mientras las muñecas se mueven rápido, las letras estáticas se pausan; si al
+        bajar las manos el movimiento coincide con una frase del dataset, se escribe completa y reemplaza las
+        letras que se hayan colado desde que empezó el movimiento."""
         asignadas = self.seguidor.asignar(detecciones, ahora)
+        grababa = self.gestos.grabando
+        self.gestos.paso(asignadas, ahora, tamano)   # mismas detecciones crudas que vio video_extractor
+        if grababa and not self.gestos.grabando:
+            self.marca_cierre = self.marca_texto
+        if (self.gestos.grabando and not grababa) or self.gestos.tomar_primer_movimiento():
+            self.marca_texto = len(self.escritor.texto)   # lo escrito antes de mover las manos no se toca
+        frases = self.gestos.objetivo is not None   # Práctica > Frases: ninguna letra del abecedario se escribe
+        pausa = frases or self.gestos.pausa_letras(ahora)
         manos = {}
         for lado in LADOS:
             em = self.canales[lado].procesar(asignadas.get(lado), ahora)
-            if em.gesto:
+            if em.gesto and not frases:
                 self.escritor.registrar_dinamico(lado, em.gesto, ahora, em.pose)
-            # Las letras estáticas solo avanzan con esa mano quieta
-            letra = em.pose if (em.pose in LETRAS_TIPEABLES and not em.moviendo) else None
+            # Las letras estáticas solo avanzan con esa mano quieta y sin un gesto dinámico en curso
+            letra = em.pose if (em.pose in LETRAS_TIPEABLES and not em.moviendo and not pausa) else None
             em.progreso = self.escritor.actualizar(lado, letra, ahora)
             manos[lado] = em
+        r = self.gestos.resultado
+        if r and r["mejor"]:
+            if frases:                                # práctica: solo se escribe la frase objetivo, si se acertó
+                frase = r["objetivo"] if r["acierto"] else None
+            else:                                     # traducir: la frase más cercana, si se aceptó
+                frase = r["mejor"] if r["aceptado"] else None
+            if frase:
+                r["escrito"] = texto_frase(frase)
+                self.escritor.escribir_frase(r["escrito"], self.marca_cierre, ahora)
+                if self.gestos.grabando:              # el gesto siguiente ya empezó: no debe reemplazar esta frase
+                    self.marca_texto = len(self.escritor.texto)
         evento = self.analizador.actualizar(rostro, ahora, tamano) if procesar_rostro else None
         if evento:
             self.escritor.ejecutar(ACCIONES_FACIALES[evento], ahora)

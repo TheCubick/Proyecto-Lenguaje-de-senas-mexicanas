@@ -2,6 +2,8 @@
     // Usa siempre el Python del entorno virtual del proyecto
     "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
     "python.terminal.activateEnvironment": true,
+    // El código vive en python/: así Pylance resuelve los imports entre módulos (from gestos import ...)
+    "python.analysis.extraPaths": ["${workspaceFolder}/python"],
 
     // PowerShell con ExecutionPolicy Bypass para que Activate.ps1 no se bloquee
     "terminal.integrated.profiles.windows": {

@@ -19,8 +19,8 @@ Uso al entrenar (en memoria, sin escribir nada):
   muestra caen en ambos lados, la exactitud de prueba sale inflada.
 
 Línea de comandos (exporta para revisar o para Colab):
-  python data_augmentation.py --factor 5           # -> dataset_aumentado.npz con X, y, origen
-  python data_augmentation.py --factor 10 --semilla 7 --salida aumentado_x10.npz
+  python python/data_augmentation.py --factor 5           # -> dataset_aumentado.npz con X, y, origen
+  python python/data_augmentation.py --factor 10 --semilla 7 --salida aumentado_x10.npz
 """
 import argparse
 import sys
@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from video_extractor import F, LADOS, SALIDA, cargar_dataset, columnas_mano, interpolar
+from video_extractor import DATOS, F, LADOS, SALIDA, cargar_dataset, columnas_mano, interpolar
 
 # Medido en dataset/ (57 muestras, 2026-11-05): la mano (muñeca -> nudillo medio) mide 0.068-0.086 del cuadro en la
 # imagen (p10-p90: 0.037-0.115) y 8.2-9.4 cm en el mundo. El ruido es ~2 % de esa medida.
@@ -105,7 +105,7 @@ def main():
     p.add_argument("--factor", type=int, default=5, help="multiplicador total, p. ej. 5 o 10 (default 5)")
     p.add_argument("--semilla", type=int, default=0, help="semilla del azar, para repetir el mismo resultado")
     p.add_argument("--dataset", type=Path, default=SALIDA, help=f"carpeta de muestras (default {SALIDA.name}/)")
-    p.add_argument("--salida", type=Path, default=Path("dataset_aumentado.npz"), help="archivo .npz de salida")
+    p.add_argument("--salida", type=Path, default=DATOS / "dataset_aumentado.npz", help="archivo .npz de salida")
     args = p.parse_args()
     X, y = cargar_dataset(args.dataset)
     if len(X) == 0:

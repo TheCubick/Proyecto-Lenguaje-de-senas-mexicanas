@@ -6,13 +6,13 @@ secuencia de EXACTAMENTE 30 fotogramas en dataset/<palabra>/seq_XX_N.npy. Al ter
 de un video, lo mueve a videos/listo/. Herramienta independiente: no toca el servidor ni la interfaz.
 
 Uso:
-  python video_extractor.py                         # procesa dataset_config.json (solo cortes nuevos o cambiados)
-  python video_extractor.py --importar "videos/minutos exactos de videos.txt"   # notas a mano -> config, y procesa
-  python video_extractor.py --revisar               # valida la configuración y muestra el plan, sin MediaPipe
-  python video_extractor.py --config cortes.csv     # CSV con encabezado video,palabra,inicio,fin[,espejo]
-  python video_extractor.py --rehacer               # vuelve a extraer todo
-  python video_extractor.py --no-mover              # no mover los videos terminados a videos/listo/
-  python video_extractor.py --listar                # muestras por palabra en dataset/
+  python python/video_extractor.py                         # procesa dataset_config.json (solo cortes nuevos o cambiados)
+  python python/video_extractor.py --importar "datos/videos/minutos exactos de videos.txt"   # notas a mano -> config, y procesa
+  python python/video_extractor.py --revisar               # valida la configuración y muestra el plan, sin MediaPipe
+  python python/video_extractor.py --config cortes.csv     # CSV con encabezado video,palabra,inicio,fin[,espejo]
+  python python/video_extractor.py --rehacer               # vuelve a extraer todo
+  python python/video_extractor.py --no-mover              # no mover los videos terminados a videos/listo/
+  python python/video_extractor.py --listar                # muestras por palabra en dataset/
 
 Cada corte de la configuración:
   {"video": "Frutas.mp4", "palabra": "manzana", "inicio": "00:15", "fin": "00:18"}
@@ -72,11 +72,12 @@ import numpy as np
 
 from classifier_hands import LADOS, MAX_MANOS, SeguidorManos, detectar_manos
 
-RAIZ = Path(__file__).resolve().parent
-CONFIG = RAIZ / "dataset_config.json"
-VIDEOS = RAIZ / "videos"
+RAIZ = Path(__file__).resolve().parent.parent   # el código vive en python/; los datos, en datos/
+DATOS = RAIZ / "datos"
+CONFIG = DATOS / "dataset_config.json"
+VIDEOS = DATOS / "videos"
 LISTO = "listo"                # subcarpeta de videos/ adonde pasan los videos ya procesados
-SALIDA = RAIZ / "dataset"
+SALIDA = DATOS / "dataset"
 INDICE = "indice.json"
 VENTANA = 30                   # Fotogramas por muestra (la LSTM recibe secuencias de este largo)
 FPS_MAX = 30.0                 # Videos más rápidos se leen a 30 FPS: más fotogramas no aportan al remuestrear a 30
@@ -515,14 +516,14 @@ def procesar(cortes, args, parametros):
 
 def cargar_dataset(salida=SALIDA):
     """Para entrenar: X (N, 30, F) float32 y y (N,) con la palabra (nombre de la carpeta) de cada muestra."""
-    rutas = sorted(Path(salida).glob("*/seq_*.npy"))
+    rutas = sorted(Path(salida).glob("*/*seq_*.npy"))   # del extractor (seq_) y propias (pablo_seq_, gestos.py)
     X = np.stack([np.load(r) for r in rutas]) if rutas else np.zeros((0, VENTANA, F), np.float32)
     return X, np.array([r.parent.name for r in rutas])
 
 
 def listar(salida):
     carpetas = sorted(p for p in salida.iterdir() if p.is_dir()) if salida.is_dir() else []
-    filas = [(p.name, len(list(p.glob("seq_*.npy")))) for p in carpetas]
+    filas = [(p.name, len(list(p.glob("*seq_*.npy")))) for p in carpetas]
     filas = [f for f in filas if f[1]]
     if not filas:
         print(f"{salida} está vacío.")

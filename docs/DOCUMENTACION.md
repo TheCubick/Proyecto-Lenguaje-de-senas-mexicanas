@@ -494,7 +494,7 @@ Campos del mensaje `estado` (`ui_panel.estado_web`):
 
 #### 2.5.4 Ciclo de vida
 
-1. `python server.py` crea el servidor uvicorn. Al arrancar (`lifespan`), abre la cámara con `CamaraReciente` y lanza el hilo de proceso. Un segundo después abre `http://localhost:5000` con `webbrowser`.
+1. `python python/server.py` crea el servidor uvicorn. Al arrancar (`lifespan`), abre la cámara con `CamaraReciente` y lanza el hilo de proceso. Un segundo después abre `http://localhost:5000` con `webbrowser`.
 2. El navegador se conecta, recibe `config` y, con el **primer estado**, apunta el `<img>` a `/video_feed`. El primer fotograma se detecta en el bucle de dibujo (`naturalWidth > 0`), porque un flujo MJPEG no dispara `load` de forma fiable en todos los navegadores.
 3. Si el motor no puede abrir la cámara, publica un mensaje `error` y termina; el servidor sigue arriba para que la interfaz lo muestre.
 4. **Cierre:** el botón *Detener* (con confirmación en dos pasos) suelta el `<img>` y envía `SALIR`; también se puede pulsar Ctrl+C en la terminal. El flujo MJPEG y el WebSocket revisan `should_exit` y terminan solos; uvicorn cierra las conexiones (`timeout_graceful_shutdown = 2 s`). Después, el `lifespan` activa `detener`, espera al hilo de proceso (que cierra la voz) y libera la cámara.
@@ -892,7 +892,7 @@ py -3.12 -m venv venv
 .\venv\Scripts\python.exe -m pip install opencv-python mediapipe==0.10.18 numpy pyttsx3 fastapi uvicorn websockets
 
 # 4. Verificar que todo importa
-.\venv\Scripts\python.exe -c "import main, server; print('OK')"
+.\venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'python'); import main, server; print('OK')"
 ```
 
 > La carpeta `venv/` está en `.gitignore`: cada integrante crea la suya localmente y no se sube al repositorio.
@@ -900,7 +900,7 @@ py -3.12 -m venv venv
 ### 6.4 Ejecución
 
 ```powershell
-.\venv\Scripts\python.exe server.py
+.\venv\Scripts\python.exe python\server.py
 ```
 
 1. La terminal muestra `Traductor LSM en http://localhost:5000` y, un segundo después, se abre esa dirección en el **navegador predeterminado**. Si no se abre, escríbela a mano.
@@ -912,10 +912,10 @@ py -3.12 -m venv venv
 
 | Archivo | Qué configura |
 |---|---|
-| `.vscode/launch.json` | Ejecuta `server.py` con `venv\Scripts\python.exe` directamente, sin depender de activar el entorno |
+| `.vscode/launch.json` | Ejecuta `python/server.py` con `venv\Scripts\python.exe` directamente, sin depender de activar el entorno |
 | `.vscode/settings.json` | Fija `venv` como intérprete del proyecto y crea un perfil de terminal **"PowerShell (venv)"** con `ExecutionPolicy Bypass`, para que Windows no bloquee `Activate.ps1` |
 
-`python main.py` también funciona: delega en `server.main()`.
+`python python/main.py` también funciona: delega en `server.main()`.
 
 **Solución de problemas:**
 
@@ -1191,26 +1191,38 @@ En la arquitectura web el motor no dibuja ni codifica imágenes: solo procesa y 
 
 ```
 Proyecto/
+├── python/                  # Todo el código Python (módulos planos que se importan por nombre)
+│   ├── server.py            # Punto de entrada: FastAPI, WebSocket /ws, Difusor, video MJPEG, apertura del navegador
+│   ├── main.py              # Motor: bucle de proceso en su propio hilo
+│   ├── camara.py            # Captura en un hilo propio: siempre el fotograma más reciente
+│   ├── classifier_hands.py  # Manos: dos manos, One-Euro, rasgos 3D, alfabeto y trazos
+│   ├── classifier_face.py   # Rostro: solvePnP, cejas, negar y asentir
+│   ├── traductor.py         # Hold-to-type por mano y orquestación de un frame
+│   ├── gestos.py            # Frases con movimiento: DTW contra el dataset y muestras propias
+│   ├── voice_engine.py      # Voz asíncrona (SAPI) y puente al hardware
+│   ├── ui_panel.py          # Presentación: estado JSON con las coordenadas de las manos
+│   ├── video_extractor.py   # Herramienta: cortes de video -> dataset de 30 fotogramas
+│   ├── auto_etiquetador.py  # Herramienta: cortes propuestos a partir de la voz (Whisper)
+│   └── data_augmentation.py # Herramienta: variantes sintéticas para entrenar
+├── static/                  # Interfaz web (la sirve python/server.py)
+│   ├── index.html           # Estructura de la interfaz
+│   ├── estilos.css          # Temas, maquetación y animaciones
+│   └── app.js               # Cliente WebSocket, video MJPEG, esqueleto, tema y Modo Práctica
+├── datos/
+│   ├── dataset_config.json  # Cortes de los videos (versionado)
+│   ├── videos/              # Videos de entrada; los terminados pasan a videos/listo/ (ignorado por Git)
+│   ├── dataset/             # Muestras .npy por palabra e indice.json (ignorado por Git)
+│   └── gestos_vivo.csv      # Evaluaciones de frases en vivo (ignorado por Git)
+├── docs/
+│   ├── DOCUMENTACION.md     # Este documento
+│   └── errores_detectado.txt # Pendientes anotados a mano
 ├── .vscode/
-│   ├── launch.json       # Ejecución con F5 usando el Python de venv
-│   └── settings.json     # Intérprete del proyecto y perfil de PowerShell
-├── venv/                 # Entorno virtual (ignorado por Git)
+│   ├── launch.json          # F5: python/server.py con el Python de venv
+│   └── settings.json        # Intérprete, python/ para Pylance y perfil de PowerShell
+├── venv/                    # Entorno virtual (ignorado por Git)
 ├── .gitignore
-├── server.py             # Servidor web: FastAPI, WebSocket /ws, Difusor, apertura del navegador
-├── main.py               # Motor: bucle de proceso en su propio hilo
-├── camara.py             # Captura en un hilo propio: siempre el fotograma más reciente
-├── classifier_hands.py   # Manos: dos manos, One-Euro, rasgos 3D, alfabeto y trazos
-├── classifier_face.py    # Rostro: solvePnP, cejas, negar y asentir
-├── traductor.py          # Hold-to-type por mano y orquestación de un frame
-├── voice_engine.py       # Voz asíncrona y puente al hardware
-├── ui_panel.py           # Presentación: estado JSON con las coordenadas de las manos
-├── static/
-│   ├── index.html        # Estructura de la interfaz
-│   ├── estilos.css       # Temas, maquetación y animaciones
-│   └── app.js            # Cliente WebSocket, cámara local, esqueleto, tema y Modo Práctica
-├── CLAUDE.md             # Mapa compacto del proyecto para el asistente de código
-├── README.md             # Resumen e inicio rápido
-└── DOCUMENTACION.md      # Este documento
+├── CLAUDE.md                # Mapa compacto del proyecto para el asistente de código
+└── README.md                # Resumen e inicio rápido
 ```
 
 ### 11.2 Módulos

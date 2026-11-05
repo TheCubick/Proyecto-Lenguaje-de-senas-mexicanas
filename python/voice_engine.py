@@ -1,4 +1,4 @@
-"""Voz asíncrona (pyttsx3 en un hilo propio), utilidades de texto y puente al hardware (mock serial)."""
+"""Voz asíncrona (SAPI de Windows en un hilo propio), utilidades de texto y puente al hardware (mock serial)."""
 import threading
 from collections import deque
 
@@ -6,7 +6,8 @@ from collections import deque
 
 
 VOZ_HABILITADA = True
-VOZ_VELOCIDAD = 170       # Palabras por minuto
+VOZ_VELOCIDAD = 170       # Palabras por minuto (pyttsx3, fuera de Windows)
+VOZ_VELOCIDAD_SAPI = -1   # SAPI: -10 a 10; 0 es la normal (~180 palabras/min), -1 ~ 170
 VOZ_VOLUMEN = 1.0
 VOZ_INACTIVIDAD = 4.0     # Segundos sin nuevas letras para leer en voz alta la palabra pendiente
 VOZ_MAX_LETRAS_EN_COLA = 2
@@ -66,12 +67,53 @@ def _elegir_voz(motor):
     return mejor
 
 
-class VozAsincrona:
-    """Motor de voz (pyttsx3) en un hilo propio: hablar NUNCA bloquea el bucle de la cámara.
+def _motor_sapi():
+    """Windows: SAPI directo con pywin32 (ya lo instala pyttsx3). Devuelve hablar(texto), bloqueante.
 
-    El motor se crea DENTRO del hilo (en Windows, SAPI5 queda ligado al hilo que lo crea) y las frases
-    esperan en una cola. Las palabras sustituyen a las letras pendientes; si se acumulan letras se
-    descartan las más viejas, para que la voz nunca se quede atrasada respecto a lo que se ve.
+    No se usa pyttsx3 aquí: medido (2026-11-05) con pyttsx3 2.99, un motor reutilizado solo habla en el PRIMER
+    runAndWait(); los siguientes regresan en 0.3-0.5 s sin sonido (una frase de 3.2 s). Como la primera frase era
+    el calentamiento en silencio, la interfaz decía "Voz lista" y nunca sonaba nada. SAPI directo: 3.6 s cada vez.
+    """
+    import pythoncom
+    import win32com.client
+    pythoncom.CoInitialize()                  # COM por hilo (este hilo es el único que habla)
+    voz = win32com.client.Dispatch("SAPI.SpVoice")
+    fichas = list(voz.GetVoices())
+    elegida = (next((f for f in fichas if f.GetAttribute("Language").upper() == "80A"), None)        # es-MX
+               or next((f for f in fichas if "spanish" in f.GetDescription().lower()), None))
+    if elegida is not None:
+        voz.Voice = elegida
+    else:
+        avisar_una_vez("No hay una voz en español instalada; se usará la voz por defecto de Windows.")
+    voz.Rate = VOZ_VELOCIDAD_SAPI
+    voz.Volume = int(VOZ_VOLUMEN * 100)
+    print(f"Voz: {voz.Voice.GetDescription()}")
+    return lambda texto: voz.Speak(texto)
+
+
+def _motor_pyttsx3():
+    """Fuera de Windows: pyttsx3 con un motor NUEVO por frase (reutilizarlo enmudece tras la primera)."""
+    import pyttsx3
+
+    def hablar(texto):
+        motor = pyttsx3.init()
+        voz = _elegir_voz(motor)
+        if voz is not None:
+            motor.setProperty("voice", voz.id)
+        motor.setProperty("rate", VOZ_VELOCIDAD)
+        motor.setProperty("volume", VOZ_VOLUMEN)
+        motor.say(texto)
+        motor.runAndWait()
+        motor.stop()
+    return hablar
+
+
+class VozAsincrona:
+    """Motor de voz en un hilo propio: hablar NUNCA bloquea el bucle de la cámara.
+
+    El motor se crea DENTRO del hilo (en Windows, SAPI queda ligado al hilo que lo crea) y las frases esperan
+    en una cola. Las palabras sustituyen a las letras pendientes; si se acumulan letras se descartan las más
+    viejas, para que la voz nunca se quede atrasada respecto a lo que se ve.
     """
 
     def __init__(self, habilitada=True):
@@ -109,25 +151,11 @@ class VozAsincrona:
             self._hilo.join(timeout=1.5)
 
     def _bucle(self):
-        motor = None
         try:
-            try:                                  # Windows: cada hilo debe inicializar COM
-                import pythoncom
-                pythoncom.CoInitialize()
-            except ImportError:
-                pass
-            import pyttsx3
-            motor = pyttsx3.init()
-            voz = _elegir_voz(motor)
-            if voz is not None:
-                motor.setProperty("voice", voz.id)
-            else:
-                avisar_una_vez("No hay una voz en español instalada; se usará la voz por defecto de Windows.")
-            motor.setProperty("rate", VOZ_VELOCIDAD)
-            motor.setProperty("volume", 0.0)      # calentamiento en silencio: la primera frase real no se retrasa
-            motor.say("a")
-            motor.runAndWait()
-            motor.setProperty("volume", VOZ_VOLUMEN)
+            try:
+                hablar = _motor_sapi()
+            except ImportError:                   # no es Windows (sin pywin32)
+                hablar = _motor_pyttsx3()
             self.estado = "lista"
         except Exception as e:
             self.estado = "no disponible"
@@ -141,14 +169,9 @@ class VozAsincrona:
                     break
                 texto, _ = self._cola.popleft()
             try:
-                motor.say(texto)
-                motor.runAndWait()
+                hablar(texto)
             except Exception as e:                # Un fallo al hablar no debe matar el hilo
                 avisar_una_vez(f"Error al hablar ({type(e).__name__}: {e}).")
-        try:
-            motor.stop()
-        except Exception:
-            pass
 
 
 class PoliticaVoz:
@@ -172,6 +195,10 @@ class PoliticaVoz:
             self.t_ultimo = ahora
         elif tipo == "confirmar":
             self.leer(texto)
+        elif tipo == "frase":             # frase dinámica completa: se dice entera, ya va cerrada con espacio
+            self.voz.decir(ev[1].lower(), "palabra")
+            self.pendiente = False
+            self.t_ultimo = ahora
         elif tipo == "limpiar":
             self.pendiente = False
         else:                             # espacio, borrar, negación, pregunta: reinician el contador

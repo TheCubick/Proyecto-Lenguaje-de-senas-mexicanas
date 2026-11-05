@@ -30,7 +30,7 @@
       </div>
     </div>
     <div class="sistema">
-      <span class="pastilla" id="voz" data-voz="desactivada" title="Voz (pyttsx3)">
+      <span class="pastilla" id="voz" data-voz="desactivada" role="button" tabindex="0" title="Voz (Windows SAPI). Clic para probar las bocinas">
         <svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
         <span id="voz-texto">Voz</span>
       </span>
@@ -103,6 +103,7 @@
 
       <!-- Subtítulos cinematográficos, centrados bajo el video -->
       <div class="subtitulos vacio" id="texto" aria-live="polite"><span id="texto-contenido"></span><span class="cursor" aria-hidden="true"></span></div>
+      <div class="gesto-diag" id="gesto-diag" data-tono="nada" hidden title="Diagnóstico del reconocedor de frases (gestos.py); también en la terminal y en gestos_vivo.csv"></div>
     </section>
 
     <!-- ================= Panel lateral ================= -->
@@ -140,7 +141,8 @@
         <div class="practica-cabeza">
           <div class="segmentado" role="tablist" aria-label="Qué practicar">
             <button type="button" data-modo-practica="letras" aria-selected="true">Letras</button>
-            <button type="button" data-modo-practica="palabras" aria-selected="false">Palabras</button>
+            <button type="button" data-modo-practica="palabras" aria-selected="false">Deletreo</button>
+            <button type="button" data-modo-practica="gestos" aria-selected="false">Frases</button>
           </div>
           <div class="marcador">
             <span title="Aciertos"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><b id="aciertos">0</b></span>
@@ -157,7 +159,17 @@
           <button type="button" class="flecha" id="letra-azar" title="Letra al azar" aria-label="Letra al azar"><svg viewBox="0 0 24 24"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg></button>
         </div>
 
-        <!-- Selector de palabra -->
+        <!-- Selector de frase / gesto dinámico (etiquetas de dataset/) -->
+        <div class="selector-palabras" id="selector-gestos" hidden>
+          <div class="chips" id="chips-gestos"></div>
+          <p class="sin-gestos" id="sin-gestos" hidden>Aún no hay muestras en <code>dataset/</code>: extrae videos con <code>video_extractor.py</code>.</p>
+          <div class="grabar-muestra">
+            <button type="button" id="guardar-muestra" disabled title="Guarda tu último movimiento evaluado como referencia de esta frase (tecla G)">Guardar como muestra (G)</button>
+            <span id="muestras-propias">0 muestras tuyas</span>
+          </div>
+        </div>
+
+        <!-- Selector de palabra para deletrear -->
         <div class="selector-palabras" id="selector-palabras" hidden>
           <div class="chips" id="chips-palabras"></div>
           <form class="form-palabra" id="form-palabra" autocomplete="off">

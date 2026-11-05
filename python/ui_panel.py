@@ -8,6 +8,7 @@ import mediapipe as mp
 
 from classifier_face import AFIRM_AMPLITUD, CEJAS_UMBRAL, NEG_AMPLITUD
 from classifier_hands import GESTOS_DINAMICOS, LADOS, LETRAS_TIPEABLES, POSES_SILENCIOSAS, PUNTO_DE_POSE
+from gestos import etiquetas_dataset
 from traductor import SEGUNDOS_PARA_ESCRIBIR
 from voice_engine import limpiar_texto
 
@@ -99,7 +100,8 @@ def config_web():
             bases.setdefault(g, set()).update({g} if gesto == "QX" else poses - POSES_SILENCIOSAS)
     return {"tipo": "config", "umbral_cejas": CEJAS_UMBRAL, "segundos": SEGUNDOS_PARA_ESCRIBIR,
             "conexiones": CONEXIONES_MANO, "bases": {g: sorted(p) for g, p in bases.items()},
-            "guia": [{"clave": c, "desc": d, "mov": m} for c, d, m in GUIA]}
+            "guia": [{"clave": c, "desc": d, "mov": m} for c, d, m in GUIA],
+            "gestos": etiquetas_dataset()}       # palabras y frases con muestras en dataset/ (práctica dinámica)
 
 
 def _normalizar(x, y, ancho, alto):
@@ -163,5 +165,8 @@ def estado_web(traductor, manos, vistas, principal, progreso, fps, voz, tamano, 
                    "calibracion": round(an.progreso_calibracion * 100), "cejas": round(an.ratio_cejas, 3),
                    "cabeza": None if pose is None else [round(pose.pitch), round(pose.yaw), round(pose.roll)]},
         "voz": voz, "fps": round(fps, 1), "tamano": [ancho, alto], "tiempos": tiempos,
-        "diagnostico": lineas_diagnostico(manos, traductor.canales, an) if diagnostico else None,
+        "diagnostico": ([f"Tiempo por fotograma: manos (MediaPipe) {tiempos['manos_ms']:.0f} ms · rostro "
+                         f"{tiempos['rostro_ms']:.0f} ms · motor {tiempos['motor_ms']:.0f} ms · total "
+                         f"{tiempos['proceso_ms']:.0f} ms · {fps:.0f} FPS"]
+                        + lineas_diagnostico(manos, traductor.canales, an)) if diagnostico else None,
     }

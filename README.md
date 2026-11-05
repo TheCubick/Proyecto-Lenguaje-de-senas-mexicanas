@@ -45,12 +45,12 @@ py -3.12 -m venv venv
 .\venv\Scripts\python.exe -m pip install opencv-python mediapipe==0.10.18 numpy pyttsx3 fastapi uvicorn websockets
 
 # 4. Ejecutar
-.\venv\Scripts\python.exe server.py
+.\venv\Scripts\python.exe python\server.py
 ```
 
 Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el **navegador predeterminado se abre solo** en esa dirección; si no se abre, escríbela a mano. El navegador no pide permiso de cámara: el video lo transmite el propio programa. Para terminar, pulsa **Detener** dos veces en la interfaz o **Ctrl+C** en la terminal.
 
-**Con VS Code:** abre la carpeta y pulsa **F5** ("Traductor LSM (server.py)"). `.vscode/launch.json` ya usa el Python de `venv`.
+**Con VS Code:** abre la carpeta y pulsa **F5** ("Traductor LSM (python/server.py)"). `.vscode/launch.json` ya usa el Python de `venv`.
 
 > La voz usa las voces SAPI5 de Windows (por ejemplo *Microsoft Sabina*, español de México). Si no hay ninguna en español, el programa funciona igual y el encabezado muestra **Sin voz**.
 
@@ -81,7 +81,7 @@ Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el *
   - estado a 30 por segundo, 0.5 KB cada uno (1.6 KB con dos manos);
   - 16 ms desde la captura hasta que el estado llega al cliente.
 
-El protocolo, el modelo de hilos y las decisiones de diseño están en la [documentación técnica](DOCUMENTACION.md#25-arquitectura-cliente-servidor).
+El protocolo, el modelo de hilos y las decisiones de diseño están en la [documentación técnica](docs/DOCUMENTACION.md#25-arquitectura-cliente-servidor).
 
 ## Interfaz
 
@@ -105,9 +105,13 @@ El anillo de progreso cambia de color según cuánto falta para registrar la se�
 ## Modo Práctica
 
 1. Abre la pestaña **Práctica** del panel derecho. También puedes tocar una letra en la guía (`G`).
-2. Elige **Letras**: cualquiera de las 30 señas, con flechas o al azar. O elige **Palabras**: una sugerida o la que escribas, para deletrearla.
+2. Elige **Letras**: cualquiera de las 30 señas, con flechas o al azar. O **Deletreo**: una palabra sugerida o la que escribas, letra por letra. O **Frases**: una palabra o frase con movimiento del dataset (*gracias*, *mi nombre es*, *sordo*…).
 3. Haz la seña frente a la cámara. La retroalimentación te dice si es la correcta, si ya tienes la base de una seña con movimiento (*"Bien, I es la base: ahora haz el movimiento"*) o qué seña está detectando.
 4. Al registrarse la seña correcta, la tarjeta gira, sale confeti y suben los aciertos y la racha. Si registras otra letra, la racha vuelve a cero.
+
+**Frases (tarjeta "Dinámica").** Empieza con las manos abajo, haz el movimiento completo y continuo, y bájalas: al bajarlas, `gestos.py` compara el movimiento (remuestreado a 30 fotogramas, como el dataset) contra las ejecuciones extraídas de los videos y te dice si coincide o a qué frase se pareció. Es un comparador por plantillas (DTW) mientras se entrena la LSTM; la lista de frases sale de las carpetas de `dataset/`.
+
+**Muestras propias.** Después de hacer la frase (cuando el cuadro de diagnóstico muestre la evaluación), pulsa **Guardar como muestra** o la tecla **G**: tu movimiento se guarda como `datos/dataset/<frase>/pablo_seq_XX.npy` y se usa como referencia desde ese momento. Con 3-4 repeticiones propias por frase el comparador reconoce tus manos y tu ritmo. En Práctica > Frases la tecla G guarda; en los demás modos abre la guía.
 
 > Lo que aciertas en práctica también se escribe en los subtítulos; usa **Limpiar** al terminar.
 
@@ -213,11 +217,11 @@ Se calibró y se probó con **nueve sesiones guiadas** grabadas con la cámara r
 - El esqueleto va unos milisegundos detrás del video, porque espera al reconocimiento.
 - La práctica solo guarda la mejor racha.
 
-Detalles, cifras y la metodología completa en la [documentación técnica](DOCUMENTACION.md).
+Detalles, cifras y la metodología completa en la [documentación técnica](docs/DOCUMENTACION.md).
 
 ## Minería de datos desde videos (para entrenar la LSTM)
 
-`video_extractor.py` es una herramienta independiente del traductor. Toma los cortes de `dataset_config.json` (qué palabra hay en qué segundos de qué video de `videos/`), extrae los landmarks 3D de las manos con el mismo pipeline que el modo en vivo y guarda cada seña como una secuencia de exactamente 30 fotogramas en `dataset/<palabra>/seq_XX.npy`.
+`video_extractor.py` es una herramienta independiente del traductor. Toma los cortes de `dataset_config.json` (qué palabra hay en qué segundos de qué video de `datos/videos/`), extrae los landmarks 3D de las manos con el mismo pipeline que el modo en vivo y guarda cada seña como una secuencia de exactamente 30 fotogramas en `datos/dataset/<palabra>/seq_XX.npy`.
 
 ```json
 [
@@ -227,18 +231,18 @@ Detalles, cifras y la metodología completa en la [documentación técnica](DOCU
 ```
 
 ```powershell
-.\venv\Scripts\python.exe video_extractor.py --revisar   # valida tiempos y nombres sin correr MediaPipe
-.\venv\Scripts\python.exe video_extractor.py             # extrae solo los cortes nuevos o corregidos
-.\venv\Scripts\python.exe video_extractor.py --listar    # muestras por palabra
+.\venv\Scripts\python.exe python\video_extractor.py --revisar   # valida tiempos y nombres sin correr MediaPipe
+.\venv\Scripts\python.exe python\video_extractor.py             # extrae solo los cortes nuevos o corregidos
+.\venv\Scripts\python.exe python\video_extractor.py --listar    # muestras por palabra
 ```
 
 - **Tiempos:** `"MM:SS"`, `"HH:MM:SS"` o con décimas (`"00:04.8"`). Conviene dejar una holgura de unas décimas: los fotogramas sin manos de los extremos se quitan solos.
 - **Ejecuciones:** si dentro del corte el maestro hace la seña normal, baja las manos y la repite lento, cada ejecución se guarda como muestra aparte (`seq_01_1.npy` normal, `seq_01_2.npy` lenta). El corte se parte donde las manos quedan abajo o fuera de cuadro al menos 0.4 s.
 - **Normalización:** cada ejecución se remuestrea a 30 fotogramas por interpolación lineal (una de 40 se comprime, una de 20 se estira), así cada muestra va del inicio al final de la seña sin padding. Los huecos cortos donde MediaPipe pierde una mano se rellenan interpolando.
-- **Notas a mano:** `--importar "videos/minutos exactos de videos.txt"` convierte líneas como `sordo: 11 s - 17 s` o `Mi nombre es: 1:08 - 1:21` (debajo de una línea con el nombre del video) en cortes de `dataset_config.json` y luego procesa.
-- **Videos terminados:** cuando todos los cortes de un video se extraen sin fallas, el video se mueve a `videos/listo/` (desactivar con `--no-mover`); el extractor los sigue encontrando ahí.
+- **Notas a mano:** `--importar "datos/videos/minutos exactos de videos.txt"` convierte líneas como `sordo: 11 s - 17 s` o `Mi nombre es: 1:08 - 1:21` (debajo de una línea con el nombre del video) en cortes de `dataset_config.json` y luego procesa.
+- **Videos terminados:** cuando todos los cortes de un video se extraen sin fallas, el video se mueve a `datos/videos/listo/` (desactivar con `--no-mover`); el extractor los sigue encontrando ahí.
 - **Vector por fotograma (254 números):** presencia de cada mano, y por mano 21 puntos en la imagen (movimiento) más 21 puntos 3D de mundo (forma). Solo vectores, ningún píxel.
-- **Incremental:** `dataset/indice.json` recuerda de qué corte salió cada archivo. Al volver a correr solo se procesa lo nuevo o lo cambiado, y se borran las muestras de cortes que ya no están en la configuración.
+- **Incremental:** `datos/dataset/indice.json` recuerda de qué corte salió cada archivo. Al volver a correr solo se procesa lo nuevo o lo cambiado, y se borran las muestras de cortes que ya no están en la configuración.
 - **CSV:** también acepta `--config cortes.csv` con columnas `video,palabra,inicio,fin` (Excel con `;` también).
 - **Videos ya espejados** (grabados como selfie): agrega `"espejo": false` a esos cortes.
 - Para entrenar: `X, y = video_extractor.cargar_dataset()` da `X` de forma (N, 30, 254) y las palabras en `y`. Más opciones: `--help`.
@@ -254,26 +258,26 @@ X, y = cargar_dataset()
 X5, y5, origen = aumentar(X, y, factor=5)   # o factor=10
 ```
 
-Separa entrenamiento y prueba **antes** de aumentar (o agrupa por `origen`): si variantes de una misma muestra quedan en ambos lados, la exactitud de prueba sale inflada. Para revisar o subir a Colab: `.\venv\Scripts\python.exe data_augmentation.py --factor 10` escribe `dataset_aumentado.npz`.
+Separa entrenamiento y prueba **antes** de aumentar (o agrupa por `origen`): si variantes de una misma muestra quedan en ambos lados, la exactitud de prueba sale inflada. Para revisar o subir a Colab: `.\venv\Scripts\python.exe python\data_augmentation.py --factor 10` escribe `datos/dataset_aumentado.npz`.
 
 ### Auto-etiquetado por voz (opcional)
 
-`auto_etiquetador.py` propone los cortes de `dataset_config.json` en los videos donde el maestro dice el nombre de la seña. Transcribe el audio con Whisper (`faster-whisper`, modelo `small`, en la CPU), toma las palabras dichas sueltas entre pausas y crea un corte que va de 0.5 s antes de cada palabra hasta 4 s después, sin llegar a la siguiente. Los videos sin voz utilizable quedan en `requiere_anotacion_manual.txt` con el motivo.
+`auto_etiquetador.py` propone los cortes de `dataset_config.json` en los videos donde el maestro dice el nombre de la seña. Transcribe el audio con Whisper (`faster-whisper`, modelo `small`, en la CPU), toma las palabras dichas sueltas entre pausas y crea un corte que va de 0.5 s antes de cada palabra hasta 4 s después, sin llegar a la siguiente. Los videos sin voz utilizable quedan en `datos/requiere_anotacion_manual.txt` con el motivo.
 
 ```powershell
 .\venv\Scripts\python.exe -m pip install faster-whisper            # una vez (~120 MB; el modelo, ~480 MB, se baja en la primera corrida)
-.\venv\Scripts\python.exe auto_etiquetador.py --simular            # ver qué propondría, sin escribir
-.\venv\Scripts\python.exe auto_etiquetador.py --vocabulario vocabulario.txt   # recomendado: solo esas palabras
+.\venv\Scripts\python.exe python\auto_etiquetador.py --simular            # ver qué propondría, sin escribir
+.\venv\Scripts\python.exe python\auto_etiquetador.py --vocabulario vocabulario.txt   # recomendado: solo esas palabras
 ```
 
 - Solo procesa videos que aún no están en `dataset_config.json` ni en la lista manual; los cortes hechos a mano nunca se tocan. `--rehacer` vuelve a etiquetar lo que Whisper propuso antes.
 - Cada corte lleva `"origen": "whisper"` y `"oido"` (lo que se escuchó). **Revísalos antes de extraer**: en la prueba con los rótulos de "Tutorial Dilo en señas", los 9 cortes contenían la seña, pero Whisper oyó "fresa" donde se ve CEREZA.
 - `vocabulario.txt` (una palabra o frase por línea) descarta muletillas y letras sueltas, y corrige la ortografía ("durazmo" → "durazno").
-- Antes de escribir se respalda el archivo en `dataset_config.json.bak`.
+- Antes de escribir se respalda el archivo en `datos/dataset_config.json.bak`.
 
 ## Calibración
 
-Los umbrales están agrupados al inicio de cada módulo (`classifier_hands.py` para las manos, `classifier_face.py` para el rostro), cada uno con el rango medido que lo justifica. Si una seña cuesta trabajo, activa el diagnóstico con la tecla **D**. Verás sobre el video, por cada mano:
+Los umbrales están agrupados al inicio de cada módulo (`python/classifier_hands.py` para las manos, `python/classifier_face.py` para el rostro), cada uno con el rango medido que lo justifica. Si una seña cuesta trabajo, activa el diagnóstico con la tecla **D**. Verás sobre el video, por cada mano:
 
 - el estado de cada dedo (`EXT` estirado, `DOB` doblado, `CER` cerrado) con su extensión y flexión;
 - la posición del pulgar y la normal de la palma;
@@ -285,26 +289,36 @@ Con eso puedes ajustar el umbral correspondiente.
 
 ```
 Proyecto/
-├── .vscode/            # Ejecutar con F5 (server.py con el Python de venv)
-├── venv/               # Entorno virtual (no se sube a Git)
+├── python/                  # Todo el código Python
+│   ├── server.py            # Punto de entrada: FastAPI, WebSocket /ws, video MJPEG, abre el navegador
+│   ├── main.py              # Motor: bucle de proceso en su propio hilo
+│   ├── camara.py            # Captura en un hilo propio (fotograma más reciente) y JPEG del video
+│   ├── classifier_hands.py  # Manos: rasgos 3D, alfabeto y trazos
+│   ├── classifier_face.py   # Rostro: solvePnP, cejas, negar y asentir
+│   ├── traductor.py         # Hold-to-type por mano y orquestación de un fotograma
+│   ├── gestos.py            # Frases con movimiento: DTW contra el dataset y muestras propias (tecla G)
+│   ├── voice_engine.py      # Voz (SAPI de Windows) y puente al hardware
+│   ├── ui_panel.py          # Estado JSON con las coordenadas de las manos
+│   ├── video_extractor.py   # Herramienta: dataset para la LSTM desde videos
+│   ├── auto_etiquetador.py  # Herramienta: propone cortes a partir de la voz de los videos (Whisper)
+│   └── data_augmentation.py # Herramienta: variantes sintéticas (ruido, ritmo, escala) para entrenar
+├── static/                  # Interfaz web (la sirve python/server.py)
+│   ├── index.html           # Estructura
+│   ├── estilos.css          # Temas claro/oscuro, maquetación y animaciones
+│   └── app.js               # Cliente WebSocket, video MJPEG, esqueleto, tema y Modo Práctica
+├── datos/
+│   ├── dataset_config.json  # Cortes de los videos: video, palabra, inicio, fin (se versiona)
+│   ├── videos/              # Videos de entrada y notas de tiempos; los terminados pasan a videos/listo/ (no se suben)
+│   ├── dataset/             # Muestras de 30 fotogramas por palabra: seq_XX_N.npy y pablo_seq_XX.npy (no se sube)
+│   └── gestos_vivo.csv      # Cada evaluación de frases en vivo, para calibrar umbrales (no se sube)
+├── docs/
+│   ├── DOCUMENTACION.md     # Documentación técnica completa
+│   └── errores_detectado.txt # Pendientes anotados a mano
+├── .vscode/                 # F5 ejecuta python/server.py con el Python de venv
+├── venv/                    # Entorno virtual (no se sube a Git)
 ├── .gitignore
-├── server.py           # Servidor web: FastAPI, WebSocket /ws, abre el navegador
-├── main.py             # Motor: bucle de proceso en su propio hilo
-├── camara.py           # Captura en un hilo propio (fotograma más reciente) y JPEG del video
-├── classifier_hands.py # Manos: rasgos 3D, alfabeto y trazos
-├── classifier_face.py  # Rostro: solvePnP, cejas, negar y asentir
-├── traductor.py        # Hold-to-type por mano y orquestación
-├── voice_engine.py     # Voz y puente al hardware
-├── ui_panel.py         # Estado JSON con las coordenadas de las manos
-├── video_extractor.py  # Dataset para la LSTM desde videos (independiente del servidor)
-├── auto_etiquetador.py # Propone cortes a partir de la voz de los videos (Whisper)
-├── data_augmentation.py # Variantes sintéticas (ruido, ritmo, escala) para entrenar
-├── dataset_config.json # Cortes de los videos: video, palabra, inicio, fin
-├── static/
-│   ├── index.html      # Interfaz
-│   ├── estilos.css     # Temas claro/oscuro, maquetación y animaciones
-│   └── app.js          # Cliente WebSocket, video MJPEG, esqueleto, tema y Modo Práctica
-├── CLAUDE.md           # Mapa compacto para el asistente de código
-├── README.md
-└── DOCUMENTACION.md    # Documentación técnica completa
+├── CLAUDE.md                # Mapa compacto para el asistente de código
+└── README.md
 ```
+
+Los comandos se corren desde la carpeta `Proyecto/` (`.\venv\Scripts\python.exe python\<archivo>.py`). Las rutas a `datos/` y `static/` salen de la ubicación del código, no de la carpeta actual.

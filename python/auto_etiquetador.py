@@ -6,11 +6,11 @@ Para cada video de videos/ que aún no está en dataset_config.json:
   utilizable van a requiere_anotacion_manual.txt con el motivo. Después: revisar y correr video_extractor.py.
 
 Uso:
-  python auto_etiquetador.py                               # etiqueta los videos nuevos
-  python auto_etiquetador.py --simular                     # solo muestra lo que agregaría, no escribe nada
-  python auto_etiquetador.py --vocabulario vocabulario.txt # solo esas palabras (una por línea), con ortografía corregida
-  python auto_etiquetador.py --modelo base                 # más rápido y menos preciso (default small)
-  python auto_etiquetador.py --rehacer                     # vuelve a etiquetar lo que no tiene cortes manuales
+  python python/auto_etiquetador.py                               # etiqueta los videos nuevos
+  python python/auto_etiquetador.py --simular                     # solo muestra lo que agregaría, no escribe nada
+  python python/auto_etiquetador.py --vocabulario vocabulario.txt # solo esas palabras (una por línea), con ortografía corregida
+  python python/auto_etiquetador.py --modelo base                 # más rápido y menos preciso (default small)
+  python python/auto_etiquetador.py --rehacer                     # vuelve a etiquetar lo que no tiene cortes manuales
 
 Medido en los 12 videos de videos/ (2026-11-04), en los que se basan las reglas:
   - 7 no tienen voz (música o silencio): el VAD encuentra 0-1 s de habla. Whisper inventa "No, no, no, no." en uno,
@@ -37,10 +37,9 @@ import av
 import numpy as np
 from faster_whisper import WhisperModel
 
-from video_extractor import CONFIG, VIDEOS, escribir_config, leer_config, mmss, nombre_carpeta
+from video_extractor import CONFIG, DATOS, VIDEOS, escribir_config, leer_config, mmss, nombre_carpeta
 
-RAIZ = Path(__file__).resolve().parent
-MANUAL = RAIZ / "requiere_anotacion_manual.txt"
+MANUAL = DATOS / "requiere_anotacion_manual.txt"
 EXTENSIONES = {".mp4", ".mkv", ".webm", ".mov"}
 MODELO = "small"               # base oyó lo mismo pero con menos certeza ("plátano" 0.81 contra 0.98)
 VOZ_MIN = 1.0                  # s de habla (VAD) por debajo de los cuales el video se considera mudo
@@ -220,7 +219,7 @@ def main():
     escribir_config(args.config, final)
     args.manual.write_text("".join(f"{v}\t{m}\n" for v, m in manual.items()), encoding="utf-8")
     print(f"Escrito {args.config.name} (respaldo en {args.config.with_suffix('.json.bak').name}) y {args.manual.name}.")
-    print("Revisa los cortes con \"origen\": \"whisper\" y luego: python video_extractor.py --revisar")
+    print("Revisa los cortes con \"origen\": \"whisper\" y luego: python python/video_extractor.py --revisar")
 
 
 if __name__ == "__main__":

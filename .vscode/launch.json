@@ -2,10 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Traductor LSM (server.py)",
+            "name": "Traductor LSM (python/server.py)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/server.py",
+            "program": "${workspaceFolder}/python/server.py",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/venv/Scripts/python.exe",
             "console": "integratedTerminal",

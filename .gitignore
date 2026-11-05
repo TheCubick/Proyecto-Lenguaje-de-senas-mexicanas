@@ -15,6 +15,7 @@ Thumbs.db
 dataset/
 *.json.bak
 *.npz
+gestos_vivo.csv
 videos/
 *.mp4
 *.webm
