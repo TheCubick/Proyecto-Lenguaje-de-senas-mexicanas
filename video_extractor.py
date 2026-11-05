@@ -367,10 +367,15 @@ def ejecuciones(secuencia):
 
 
 def a_largo_fijo(secuencia, largo=VENTANA):
-    """T fotogramas -> exactamente `largo` con interpolación lineal en el tiempo (comprime o estira). Una mano solo
-    se interpola entre dos fotogramas donde está presente; si falta en uno, se copia el fotograma más cercano."""
+    """T fotogramas -> exactamente `largo` con interpolación lineal en el tiempo (comprime o estira)."""
+    return interpolar(secuencia, np.linspace(0, len(secuencia) - 1, largo))
+
+
+def interpolar(secuencia, pos):
+    """Muestrea la secuencia en las posiciones `pos` (índices fraccionarios crecientes). Una mano solo se interpola
+    entre dos fotogramas donde está presente; si falta en uno, se copia el fotograma más cercano."""
     T = len(secuencia)
-    pos = np.linspace(0, T - 1, largo)
+    pos = np.clip(pos, 0, T - 1)
     i0 = np.floor(pos).astype(int)
     i1 = np.minimum(i0 + 1, T - 1)
     w = (pos - i0)[:, None]

@@ -243,6 +243,19 @@ Detalles, cifras y la metodología completa en la [documentación técnica](DOCU
 - **Videos ya espejados** (grabados como selfie): agrega `"espejo": false` a esos cortes.
 - Para entrenar: `X, y = video_extractor.cargar_dataset()` da `X` de forma (N, 30, 254) y las palabras en `y`. Más opciones: `--help`.
 
+### Aumento de datos
+
+`data_augmentation.py` multiplica las muestras con variantes sintéticas. Cada variante combina ruido leve en las coordenadas (~2 % del tamaño de la mano), ritmo variable por tramos (entre 25/30 y 35/30 de la velocidad original, regresando a 30 fotogramas) y escala (distancia a la cámara ±15 %, tamaño de mano ±10 %). Las manos ausentes siguen en cero.
+
+```python
+from video_extractor import cargar_dataset
+from data_augmentation import aumentar
+X, y = cargar_dataset()
+X5, y5, origen = aumentar(X, y, factor=5)   # o factor=10
+```
+
+Separa entrenamiento y prueba **antes** de aumentar (o agrupa por `origen`): si variantes de una misma muestra quedan en ambos lados, la exactitud de prueba sale inflada. Para revisar o subir a Colab: `.\venv\Scripts\python.exe data_augmentation.py --factor 10` escribe `dataset_aumentado.npz`.
+
 ### Auto-etiquetado por voz (opcional)
 
 `auto_etiquetador.py` propone los cortes de `dataset_config.json` en los videos donde el maestro dice el nombre de la seña. Transcribe el audio con Whisper (`faster-whisper`, modelo `small`, en la CPU), toma las palabras dichas sueltas entre pausas y crea un corte que va de 0.5 s antes de cada palabra hasta 4 s después, sin llegar a la siguiente. Los videos sin voz utilizable quedan en `requiere_anotacion_manual.txt` con el motivo.
@@ -285,6 +298,7 @@ Proyecto/
 ├── ui_panel.py         # Estado JSON con las coordenadas de las manos
 ├── video_extractor.py  # Dataset para la LSTM desde videos (independiente del servidor)
 ├── auto_etiquetador.py # Propone cortes a partir de la voz de los videos (Whisper)
+├── data_augmentation.py # Variantes sintéticas (ruido, ritmo, escala) para entrenar
 ├── dataset_config.json # Cortes de los videos: video, palabra, inicio, fin
 ├── static/
 │   ├── index.html      # Interfaz
