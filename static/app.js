@@ -1,6 +1,7 @@
-// Traductor LSM: cliente web. Recibe por WebSocket el video (JPEG binario) y el estado (JSON) de server.py y
-// manda las acciones de botones y teclado. El reconocimiento vive en Python; aquí solo se presenta y, en el Modo
-// Práctica, se compara lo que llega con la seña elegida.
+// Traductor LSM: cliente web. Muestra el video de la cámara que transmite el motor (/video_feed, MJPEG), recibe
+// por WebSocket el estado JSON de server.py (señas, texto, rostro y coordenadas de las manos), dibuja el esqueleto
+// en un <canvas> encima del video y manda las acciones de botones y teclado. El reconocimiento vive en Python; aquí solo se presenta y,
+// en el Modo Práctica, se compara lo que llega con la seña elegida.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -43,7 +44,16 @@ let segundos = 1.5;
 let umbralCejas = 1.08;
 let textoPrevio = null;
 let estadoPrevio = null;
-let hayVideo = false;
+let motorListo = false;        // ya llegó un estado del motor en esta conexión
+let errorMotor = false;        // el motor reportó un error (sin cámara, señal perdida)
+let estadoVideo = "pendiente"; // "pendiente" | "lista" (llega el MJPEG) | "esqueleto" (sin video)
+let conexiones = [];           // huesos de la mano: pares de índices (llegan en config)
+let coloresMano = {};          // colores del esqueleto según el tema
+let ultimo = null;             // último estado recibido (lo dibuja requestAnimationFrame)
+let dibujado = null;           // último estado ya dibujado
+let latencia = null;           // ms desde la captura hasta el dibujo (media móvil)
+let tLatencia = 0;
+let nMedido = null;            // número de fotograma de la última medición de latencia
 
 // ---------- utilidades ----------
 function poner(el, texto) {
@@ -90,33 +100,47 @@ function aplicarTema(tema) {
   b.setAttribute("aria-checked", String(tema === "dark"));
   b.setAttribute("aria-label", tema === "dark" ? "Tema oscuro" : "Tema claro");
   guardar("lsm-tema", tema);
+  const css = getComputedStyle(document.documentElement);
+  coloresMano = { Izq: css.getPropertyValue("--izq").trim(), Der: css.getPropertyValue("--der").trim(),
+                  exito: css.getPropertyValue("--verde").trim() };
+  dibujado = null;                                    // redibujar el esqueleto con los colores nuevos
 }
 $("btn-tema").addEventListener("click", () =>
   aplicarTema(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 aplicarTema(document.documentElement.dataset.theme === "light" ? "light" : "dark");
 
 // ---------- conexión ----------
+function actualizarAviso() {
+  if (errorMotor) return;                             // el mensaje de error del motor se queda a la vista
+  if (!motorListo) aviso("Conectando con el motor de reconocimiento…");
+  else if (estadoVideo === "pendiente") aviso("Cargando el video de la cámara…");
+  else aviso(null);
+}
+
 function conectar() {
   socket = new WebSocket(`ws://${location.host}/ws`);
-  socket.binaryType = "blob";
   socket.onopen = () => {
+    errorMotor = false;
     atributo($("conexion"), "data-conexion", "vivo");
     poner($("conexion-texto"), "En vivo");
+    actualizarAviso();
   };
   socket.onmessage = (ev) => {
-    if (typeof ev.data !== "string") return pintarFrame(ev.data);
     const msg = JSON.parse(ev.data);
     if (msg.tipo === "estado") return mostrarEstado(msg);
     if (msg.tipo === "config") return configurar(msg);
     if (msg.tipo === "error") {
+      errorMotor = true;
       atributo($("conexion"), "data-conexion", "error");
       poner($("conexion-texto"), "Sin cámara");
-      hayVideo = false;
       aviso(msg.mensaje, true);
     }
   };
   socket.onclose = () => {
-    hayVideo = false;
+    motorListo = false;
+    ultimo = null;
+    limpiarEsqueleto();
+    detenerVideo();                     // se reabre al reconectar (el servidor pudo reiniciarse)
     if (detenido) {
       atributo($("conexion"), "data-conexion", "error");
       poner($("conexion-texto"), "Detenido");
@@ -130,35 +154,166 @@ function conectar() {
   };
 }
 
-// ---------- video ----------
-const lienzo = $("camara");
-const ctx = lienzo.getContext("2d");
-let decodificando = false;
-let pendiente = null;
+// ---------- video del motor (MJPEG por /video_feed) ----------
+// Python es el único dueño de la cámara (en Windows el navegador no puede abrirla a la vez). El <img> consume el
+// flujo multipart que manda server.py; el esqueleto se dibuja encima con las coordenadas del WebSocket.
+const video = $("video");
 
-async function pintarFrame(blob) {
-  if (decodificando) { pendiente = blob; return; }        // siempre el más reciente: nunca se acumula retraso
-  decodificando = true;
-  try {
-    const bmp = await createImageBitmap(blob);
-    if (lienzo.width !== bmp.width || lienzo.height !== bmp.height) {
-      lienzo.width = bmp.width;
-      lienzo.height = bmp.height;
-      $("lienzo").style.setProperty("--ar", (bmp.width / bmp.height).toFixed(4));
-    }
-    ctx.drawImage(bmp, 0, 0);
-    bmp.close();
-    if (!hayVideo) { hayVideo = true; aviso(null); }
-  } catch (_) { /* frame dañado: se ignora */ }
-  decodificando = false;
-  if (pendiente) { const b = pendiente; pendiente = null; pintarFrame(b); }
+function iniciarVideo() {
+  estadoVideo = "pendiente";
+  actualizarAviso();
+  video.src = `/video_feed?t=${Date.now()}`;       // parámetro nuevo: nunca reutilizar un flujo cerrado de caché
 }
+
+// Un flujo MJPEG no dispara "load" de forma fiable en todos los navegadores: el primer fotograma se detecta en
+// el bucle de dibujo (naturalWidth > 0). Si la petición falla (503, servidor caído), salta "error".
+video.addEventListener("error", () => {
+  if (video.getAttribute("src")) soloEsqueleto("No llega el video del motor: solo esqueleto");
+});
+
+function revisarVideo() {
+  if (estadoVideo === "pendiente" && video.naturalWidth > 0) {
+    estadoVideo = "lista";
+    $("lienzo").classList.remove("solo-esqueleto");
+    $("lienzo").classList.add("con-video");
+    $("modo-esqueleto").hidden = true;
+    actualizarAviso();
+  }
+}
+
+function soloEsqueleto(motivo) {
+  estadoVideo = "esqueleto";
+  $("lienzo").classList.remove("con-video");
+  $("lienzo").classList.add("solo-esqueleto");
+  poner($("modo-esqueleto-texto"), motivo);
+  $("modo-esqueleto").hidden = false;
+  actualizarAviso();
+}
+
+function detenerVideo() {
+  video.removeAttribute("src");                     // cierra la conexión del flujo
+  $("lienzo").classList.remove("con-video", "solo-esqueleto");
+  $("modo-esqueleto").hidden = true;
+  estadoVideo = "pendiente";
+}
+
+// ---------- esqueleto en el canvas ----------
+const esqueleto = $("esqueleto");
+const pincel = esqueleto.getContext("2d");
+const PUNTAS = new Set([4, 8, 12, 16, 20]);
+
+function ajustarLienzo() {
+  const r = esqueleto.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (esqueleto.width !== w || esqueleto.height !== h) {
+    esqueleto.width = w;
+    esqueleto.height = h;
+    dibujado = null;
+  }
+}
+new ResizeObserver(ajustarLienzo).observe($("lienzo"));
+
+function limpiarEsqueleto() {
+  pincel.clearRect(0, 0, esqueleto.width, esqueleto.height);
+  dibujado = null;
+}
+
+// Profundidad relativa a la muñeca (negativa = más cerca de la cámara) -> tamaño de las articulaciones
+function factorProfundidad(z) {
+  return Math.min(1.5, Math.max(0.75, 1 - z * 3));
+}
+
+function dibujarEsqueleto(e) {
+  const W = esqueleto.width, H = esqueleto.height;
+  const k = Math.max(1, W / 640);                    // grosores proporcionales al tamaño en pantalla
+  pincel.clearRect(0, 0, W, H);
+  pincel.lineCap = "round";
+  pincel.lineJoin = "round";
+  for (const l of LADOS) {
+    const m = e.manos[l];
+    if (!m.puntos) continue;
+    const color = m.estado === "registrada" ? coloresMano.exito : coloresMano[l];
+    const P = m.puntos.map(([x, y, z]) => [x * W, y * H, z]);
+
+    // Estela del trazo (J, Z, ?, vaivenes): tenue y fina al inicio, intensa al final
+    if (m.estela && m.estela.length > 1) {
+      pincel.strokeStyle = color;
+      for (let i = 1; i < m.estela.length; i++) {
+        const f = i / m.estela.length;
+        pincel.globalAlpha = 0.12 + 0.68 * f;
+        pincel.lineWidth = (1 + 3 * f) * k;
+        pincel.beginPath();
+        pincel.moveTo(m.estela[i - 1][0] * W, m.estela[i - 1][1] * H);
+        pincel.lineTo(m.estela[i][0] * W, m.estela[i][1] * H);
+        pincel.stroke();
+      }
+      pincel.globalAlpha = 1;
+    }
+
+    // Huesos: trazo claro translúcido con un halo del color de la mano
+    pincel.save();
+    pincel.shadowColor = color;
+    pincel.shadowBlur = 10 * k;
+    pincel.strokeStyle = "rgba(238, 242, 250, 0.72)";
+    pincel.lineWidth = 2.2 * k;
+    pincel.beginPath();
+    for (const [a, b] of conexiones) {
+      pincel.moveTo(P[a][0], P[a][1]);
+      pincel.lineTo(P[b][0], P[b][1]);
+    }
+    pincel.stroke();
+    pincel.restore();
+
+    // Articulaciones: puntos del color de la mano; las yemas, más grandes y con un aro
+    pincel.fillStyle = color;
+    pincel.strokeStyle = color;
+    for (let i = 0; i < P.length; i++) {
+      const [x, y, z] = P[i];
+      const r = (PUNTAS.has(i) ? 4.2 : 2.8) * k * factorProfundidad(z);
+      pincel.beginPath();
+      pincel.arc(x, y, r, 0, Math.PI * 2);
+      pincel.fill();
+      if (PUNTAS.has(i)) {
+        pincel.globalAlpha = 0.45;
+        pincel.lineWidth = 1.2 * k;
+        pincel.beginPath();
+        pincel.arc(x, y, r + 3.2 * k, 0, Math.PI * 2);
+        pincel.stroke();
+        pincel.globalAlpha = 1;
+      }
+    }
+  }
+}
+
+// Bucle de dibujo: solo redibuja cuando llegó un estado nuevo (o cambió el tamaño o el tema)
+function cuadro() {
+  requestAnimationFrame(cuadro);
+  revisarVideo();
+  if (!ultimo || ultimo === dibujado) return;
+  dibujarEsqueleto(ultimo);
+  if (ultimo.tiempos && ultimo.tiempos.n !== nMedido) {   // una medición por estado, no por redibujo
+    nMedido = ultimo.tiempos.n;
+    const l = Date.now() - ultimo.tiempos.captura_ms;   // captura -> dibujo (mismo reloj: misma computadora)
+    if (l >= 0 && l < 5000) latencia = latencia === null ? l : latencia * 0.9 + l * 0.1;
+    const ahora = performance.now();
+    if (ahora - tLatencia > 250 && latencia !== null) {   // texto 4 veces por segundo: legible, sin parpadeo
+      tLatencia = ahora;
+      poner($("latencia"), String(Math.round(latencia)));
+      $("rendimiento").title = `Latencia captura → dibujo: ${Math.round(latencia)} ms · proceso del motor: ` +
+        `${ultimo.tiempos.proceso_ms} ms · fotogramas viejos descartados: ${ultimo.tiempos.descartados}`;
+    }
+  }
+  dibujado = ultimo;
+}
+requestAnimationFrame(cuadro);
 
 // ---------- configuración (una vez por conexión) ----------
 function configurar(cfg) {
   umbralCejas = cfg.umbral_cejas;
   segundos = cfg.segundos;
   bases = cfg.bases;
+  conexiones = cfg.conexiones;
   $("cejas-umbral").style.left = `${fraccionCejas(umbralCejas) * 100}%`;
   const lista = $("guia-lista");
   lista.textContent = "";
@@ -203,6 +358,15 @@ function textoEstado(e) {
 }
 
 function mostrarEstado(e) {
+  // --- Primer estado de esta conexión: el motor ya tiene la cámara; se pide su video ---
+  ultimo = e;
+  if (!motorListo) {
+    motorListo = true;
+    $("lienzo").style.setProperty("--ar", (e.tamano[0] / e.tamano[1]).toFixed(4));
+    if (estadoVideo === "pendiente") iniciarVideo();
+    actualizarAviso();
+  }
+
   // --- Seña principal y anillo ---
   const tarjeta = $("sena");
   const sena = e.sena ?? "–";
@@ -241,7 +405,7 @@ function mostrarEstado(e) {
     mini.querySelector(".mini-barra span").style.width = `${m.estado === "ninguna" ? 0 : m.progreso}%`;
 
     const chip = $(`chip-${l}`);
-    chip.hidden = !m.caja || !hayVideo;
+    chip.hidden = !m.caja;
     if (m.caja) {
       const [x0, y0, , y1] = m.caja;
       const abajo = y0 < 0.12;                // sin espacio arriba: la etiqueta va debajo de la mano
@@ -650,6 +814,7 @@ $("btn-detener").addEventListener("click", () => {
   }
   clearTimeout(tDetener);
   detenido = true;
+  detenerVideo();
   enviar("SALIR");
   b.disabled = true;
   poner($("detener-texto"), "Detenido");

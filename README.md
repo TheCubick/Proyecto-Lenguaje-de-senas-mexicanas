@@ -48,7 +48,7 @@ py -3.12 -m venv venv
 .\venv\Scripts\python.exe server.py
 ```
 
-Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el **navegador predeterminado se abre solo** en esa dirección. Si no se abre, escríbela a mano. Para terminar, pulsa **Detener** dos veces en la interfaz o **Ctrl+C** en la terminal.
+Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el **navegador predeterminado se abre solo** en esa dirección; si no se abre, escríbela a mano. El navegador no pide permiso de cámara: el video lo transmite el propio programa. Para terminar, pulsa **Detener** dos veces en la interfaz o **Ctrl+C** en la terminal.
 
 **Con VS Code:** abre la carpeta y pulsa **F5** ("Traductor LSM (server.py)"). `.vscode/launch.json` ya usa el Python de `venv`.
 
@@ -57,18 +57,29 @@ Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el *
 ## Arquitectura
 
 ```
- Cámara ─▶ HILO DE CAPTURA (main.py)                  SERVIDOR (server.py)              NAVEGADOR (static/)
-           MediaPipe manos + rostro                   FastAPI · 127.0.0.1:5000
-           Traductor.paso() → texto                   WebSocket /ws
-           voz · hardware              ──Difusor──▶   binario: JPEG          ──────▶   video en <canvas>
-           esqueleto → JPEG                           texto: JSON del estado ──────▶   anillo, manos, rostro,
-           estado → JSON               ◀──cola────    {"accion": ...}        ◀──────   subtítulos, Práctica
+ Cámara ─▶ HILO DE CÁMARA (camara.py): solo el fotograma más reciente
+               │                                     SERVIDOR (server.py)              NAVEGADOR (static/)
+               │                                     FastAPI · 127.0.0.1:5000
+               ├──────── sin esperar a MediaPipe ──▶ /video_feed: MJPEG (~16 KB) ───▶  <img> en espejo
+               ▼
+           HILO DE PROCESO (main.py)
+           MediaPipe manos + rostro
+           Traductor.paso() → texto, voz
+           estado + coordenadas → JSON ────────────▶ /ws: JSON (~0.5-1.6 KB) ──────▶  <canvas>: esqueleto encima
+                                       ◀── cola ───  {"accion": ...}         ◀──────  anillo, manos, rostro,
+                                                                                      subtítulos, Práctica
 ```
 
-- **El backend hace todo el reconocimiento.** El navegador solo presenta el estado y manda acciones (Espacio, Borrar, Limpiar, Diagnóstico, Recalibrar, Detener).
-- **Latencia acotada:** el servidor guarda solo el último fotograma; si el navegador va lento, se salta fotogramas en lugar de acumular retraso.
-- **Privado:** el servidor solo escucha en `127.0.0.1` y no guarda ningún fotograma.
-- **Desempeño medido:** 30 FPS recibidos en el navegador, unos 11 KB por fotograma.
+- **Python es el único dueño de la cámara:** en Windows el navegador no siempre puede abrir una cámara que ya usa otro programa, así que el video lo transmite el mismo servidor.
+- **Video sin esperar al reconocimiento:** cada fotograma nuevo se comprime en ~1 ms y sale por `/video_feed` al instante. El estado y las coordenadas 3D de las manos llegan aparte por WebSocket, y el esqueleto se dibuja en un `<canvas>` sobre el video con los colores del tema. Como ambos salen de la misma cámara, el esqueleto siempre coincide con la imagen.
+- **Siempre lo más reciente:** un hilo lee la cámara y el proceso toma solo el último fotograma. El servidor y el dibujo también usan siempre el último estado, así que nunca se acumula retraso.
+- **El backend hace todo el reconocimiento.** El navegador presenta el estado y manda acciones (Espacio, Borrar, Limpiar, Diagnóstico, Recalibrar, Detener).
+- **Latencia a la vista:** junto a los FPS aparece la latencia desde la captura hasta el dibujo; al pasar el cursor se ve el desglose.
+- **Privado:** el servidor solo escucha en `127.0.0.1` y no se guarda ningún fotograma.
+- **Desempeño medido sin manos a la vista:**
+  - video a 30 FPS (~16 KB por fotograma);
+  - estado a 30 por segundo, 0.5 KB cada uno (1.6 KB con dos manos);
+  - 16 ms desde la captura hasta que el estado llega al cliente.
 
 El protocolo, el modelo de hilos y las decisiones de diseño están en la [documentación técnica](DOCUMENTACION.md#25-arquitectura-cliente-servidor).
 
@@ -77,7 +88,7 @@ El protocolo, el modelo de hilos y las decisiones de diseño están en la [docum
 | Zona | Contenido |
 |---|---|
 | **Encabezado** | Estado de la voz, interruptor de tema (sol/luna), guía del alfabeto, botón Detener |
-| **Cámara** | Video en espejo con el esqueleto de cada mano (azul la izquierda, verde la derecha), etiqueta flotante por mano, estela del dedo al trazar y barra de herramientas |
+| **Cámara** | Video del motor en espejo con el esqueleto de cada mano dibujado encima (azul la izquierda, verde la derecha, verde de éxito al registrar), etiqueta flotante por mano, estela del dedo al trazar, FPS y latencia, y barra de herramientas |
 | **Subtítulos** | Texto acumulado centrado bajo el video; la última letra entra con una animación breve |
 | **Traducir** | La seña en grande dentro del anillo de progreso, qué mano la hace y cómo se hace |
 | **Práctica** | Selector de letras o palabras, tarjeta de referencia, retroalimentación en vivo y marcador |
@@ -192,16 +203,60 @@ Se calibró y se probó con **nueve sesiones guiadas** grabadas con la cámara r
 | Rostro, eventos falsos en 19.4 min con cara visible | — | **11** (la versión anterior: 100), con los mismos aciertos |
 | Misma mano reflejada como la otra (espejo) | — | **100 %** igual (8 336 fotogramas) |
 | Velocidad del reconocimiento | — | 25-26 FPS conectada; 17 FPS en batería con dos manos |
-| Transmisión a la interfaz web | — | 30 FPS recibidos, ~11 KB por fotograma |
+| Transmisión a la interfaz web (sin manos a la vista) | — | Video 30 FPS (~16 KB); estado 30/s, 0.5 KB (1.6 KB con dos manos), 16 ms captura → cliente |
 
 **Limitaciones:**
 - La **P y la R** dependen de cómo cruces los dedos y en las pruebas se confundieron.
 - Aparecen algunas preguntas falsas con las cejas mientras haces letras, al mirar la mano o la pantalla.
 - Con dos manos y la laptop en batería, el reconocimiento baja a ~17 FPS.
 - El servidor es solo local.
+- El esqueleto va unos milisegundos detrás del video, porque espera al reconocimiento.
 - La práctica solo guarda la mejor racha.
 
 Detalles, cifras y la metodología completa en la [documentación técnica](DOCUMENTACION.md).
+
+## Minería de datos desde videos (para entrenar la LSTM)
+
+`video_extractor.py` es una herramienta independiente del traductor. Toma los cortes de `dataset_config.json` (qué palabra hay en qué segundos de qué video de `videos/`), extrae los landmarks 3D de las manos con el mismo pipeline que el modo en vivo y guarda cada seña como una secuencia de exactamente 30 fotogramas en `dataset/<palabra>/seq_XX.npy`.
+
+```json
+[
+  {"video": "Tutorial Dilo en señas - Frutas.mp4", "palabra": "manzana", "inicio": "00:04.8", "fin": "00:09.1"},
+  {"video": "Tutorial Dilo en señas - Frutas.mp4", "palabra": "plátano", "inicio": "00:09.1", "fin": "00:13.2"}
+]
+```
+
+```powershell
+.\venv\Scripts\python.exe video_extractor.py --revisar   # valida tiempos y nombres sin correr MediaPipe
+.\venv\Scripts\python.exe video_extractor.py             # extrae solo los cortes nuevos o corregidos
+.\venv\Scripts\python.exe video_extractor.py --listar    # muestras por palabra
+```
+
+- **Tiempos:** `"MM:SS"`, `"HH:MM:SS"` o con décimas (`"00:04.8"`). Conviene dejar una holgura de unas décimas: los fotogramas sin manos de los extremos se quitan solos.
+- **Ejecuciones:** si dentro del corte el maestro hace la seña normal, baja las manos y la repite lento, cada ejecución se guarda como muestra aparte (`seq_01_1.npy` normal, `seq_01_2.npy` lenta). El corte se parte donde las manos quedan abajo o fuera de cuadro al menos 0.4 s.
+- **Normalización:** cada ejecución se remuestrea a 30 fotogramas por interpolación lineal (una de 40 se comprime, una de 20 se estira), así cada muestra va del inicio al final de la seña sin padding. Los huecos cortos donde MediaPipe pierde una mano se rellenan interpolando.
+- **Notas a mano:** `--importar "videos/minutos exactos de videos.txt"` convierte líneas como `sordo: 11 s - 17 s` o `Mi nombre es: 1:08 - 1:21` (debajo de una línea con el nombre del video) en cortes de `dataset_config.json` y luego procesa.
+- **Videos terminados:** cuando todos los cortes de un video se extraen sin fallas, el video se mueve a `videos/listo/` (desactivar con `--no-mover`); el extractor los sigue encontrando ahí.
+- **Vector por fotograma (254 números):** presencia de cada mano, y por mano 21 puntos en la imagen (movimiento) más 21 puntos 3D de mundo (forma). Solo vectores, ningún píxel.
+- **Incremental:** `dataset/indice.json` recuerda de qué corte salió cada archivo. Al volver a correr solo se procesa lo nuevo o lo cambiado, y se borran las muestras de cortes que ya no están en la configuración.
+- **CSV:** también acepta `--config cortes.csv` con columnas `video,palabra,inicio,fin` (Excel con `;` también).
+- **Videos ya espejados** (grabados como selfie): agrega `"espejo": false` a esos cortes.
+- Para entrenar: `X, y = video_extractor.cargar_dataset()` da `X` de forma (N, 30, 254) y las palabras en `y`. Más opciones: `--help`.
+
+### Auto-etiquetado por voz (opcional)
+
+`auto_etiquetador.py` propone los cortes de `dataset_config.json` en los videos donde el maestro dice el nombre de la seña. Transcribe el audio con Whisper (`faster-whisper`, modelo `small`, en la CPU), toma las palabras dichas sueltas entre pausas y crea un corte que va de 0.5 s antes de cada palabra hasta 4 s después, sin llegar a la siguiente. Los videos sin voz utilizable quedan en `requiere_anotacion_manual.txt` con el motivo.
+
+```powershell
+.\venv\Scripts\python.exe -m pip install faster-whisper            # una vez (~120 MB; el modelo, ~480 MB, se baja en la primera corrida)
+.\venv\Scripts\python.exe auto_etiquetador.py --simular            # ver qué propondría, sin escribir
+.\venv\Scripts\python.exe auto_etiquetador.py --vocabulario vocabulario.txt   # recomendado: solo esas palabras
+```
+
+- Solo procesa videos que aún no están en `dataset_config.json` ni en la lista manual; los cortes hechos a mano nunca se tocan. `--rehacer` vuelve a etiquetar lo que Whisper propuso antes.
+- Cada corte lleva `"origen": "whisper"` y `"oido"` (lo que se escuchó). **Revísalos antes de extraer**: en la prueba con los rótulos de "Tutorial Dilo en señas", los 9 cortes contenían la seña, pero Whisper oyó "fresa" donde se ve CEREZA.
+- `vocabulario.txt` (una palabra o frase por línea) descarta muletillas y letras sueltas, y corrige la ortografía ("durazmo" → "durazno").
+- Antes de escribir se respalda el archivo en `dataset_config.json.bak`.
 
 ## Calibración
 
@@ -221,16 +276,20 @@ Proyecto/
 ├── venv/               # Entorno virtual (no se sube a Git)
 ├── .gitignore
 ├── server.py           # Servidor web: FastAPI, WebSocket /ws, abre el navegador
-├── main.py             # Motor: bucle de captura en su propio hilo
+├── main.py             # Motor: bucle de proceso en su propio hilo
+├── camara.py           # Captura en un hilo propio (fotograma más reciente) y JPEG del video
 ├── classifier_hands.py # Manos: rasgos 3D, alfabeto y trazos
 ├── classifier_face.py  # Rostro: solvePnP, cejas, negar y asentir
 ├── traductor.py        # Hold-to-type por mano y orquestación
 ├── voice_engine.py     # Voz y puente al hardware
-├── ui_panel.py         # Esqueleto de las manos sobre el video y estado JSON
+├── ui_panel.py         # Estado JSON con las coordenadas de las manos
+├── video_extractor.py  # Dataset para la LSTM desde videos (independiente del servidor)
+├── auto_etiquetador.py # Propone cortes a partir de la voz de los videos (Whisper)
+├── dataset_config.json # Cortes de los videos: video, palabra, inicio, fin
 ├── static/
 │   ├── index.html      # Interfaz
 │   ├── estilos.css     # Temas claro/oscuro, maquetación y animaciones
-│   └── app.js          # Cliente WebSocket, tema y Modo Práctica
+│   └── app.js          # Cliente WebSocket, video MJPEG, esqueleto, tema y Modo Práctica
 ├── CLAUDE.md           # Mapa compacto para el asistente de código
 ├── README.md
 └── DOCUMENTACION.md    # Documentación técnica completa

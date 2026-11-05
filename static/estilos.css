@@ -219,7 +219,27 @@ button:disabled { opacity: .5; cursor: default; }
   transition: box-shadow .3s ease;
 }
 .video.exito .lienzo { box-shadow: 0 0 0 2px var(--verde); }
-.lienzo canvas { display: block; width: 100%; height: 100%; }
+/* Video MJPEG del motor (/video_feed), espejado con CSS como la imagen que procesa MediaPipe; el esqueleto va
+   encima sin espejar porque sus coordenadas ya vienen de la imagen espejada */
+.lienzo .video-camara {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);
+  opacity: 0; transition: opacity .4s ease;
+}
+.lienzo.con-video .video-camara { opacity: 1; }
+.lienzo canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* Si el video no llega: solo el esqueleto sobre una cuadrícula tenue */
+.lienzo.solo-esqueleto {
+  background:
+    linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px) 0 0 / 32px 32px,
+    radial-gradient(circle at 50% 40%, #1a1f2b, #0a0b0f 75%);
+}
+.modo-esqueleto {
+  position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 7px;
+  max-width: calc(100% - 20px); padding: 6px 11px; border-radius: 999px; background: var(--vidrio);
+  border: 1px solid rgba(255, 255, 255, .12); color: #b9bdc8; font-size: 12px; pointer-events: none;
+}
+.modo-esqueleto svg { width: 14px; height: 14px; flex: none; }
 
 /* Etiquetas que siguen a cada mano (HTML sobre el video, no dibujadas en el frame) */
 .chip-mano {

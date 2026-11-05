@@ -1,9 +1,9 @@
-"""Capa de presentación de la interfaz web: qué se muestra de cada mano, los puntos de las manos sobre el video
-(sin textos ni recuadros) y el estado JSON que consume static/app.js. No dibuja paneles: eso lo hace el navegador."""
+"""Capa de presentación de la interfaz web: qué se muestra de cada mano y el estado JSON que consume static/app.js
+(seña, progreso, coordenadas de las manos, estela del trazo, rostro). Python no dibuja nada: el navegador muestra
+su propio video de la cámara y dibuja el esqueleto encima con estas coordenadas."""
 from dataclasses import dataclass
 from typing import Optional
 
-import cv2
 import mediapipe as mp
 
 from classifier_face import AFIRM_AMPLITUD, CEJAS_UMBRAL, NEG_AMPLITUD
@@ -11,16 +11,11 @@ from classifier_hands import GESTOS_DINAMICOS, LADOS, LETRAS_TIPEABLES, POSES_SI
 from traductor import SEGUNDOS_PARA_ESCRIBIR
 from voice_engine import limpiar_texto
 
-CONEXIONES_MANO = tuple(mp.solutions.hands.HAND_CONNECTIONS)
-PUNTAS = (4, 8, 12, 16, 20)
+CONEXIONES_MANO = sorted(tuple(c) for c in mp.solutions.hands.HAND_CONNECTIONS)   # pares de índices (huesos)
 
 DURACION_DESTELLO = 1.2        # Segundos que se muestra en grande una seña con movimiento recién registrada
-CALIDAD_JPEG = 80              # 640x480 a calidad 80: ~35 KB por frame, ~3 ms de codificación
-
-# Colores del esqueleto (BGR). Iguales a --izq / --der de static/estilos.css
-COLOR_LADO = {"Izq": (255, 140, 79), "Der": (166, 230, 46)}    # azul eléctrico / verde neón
-COLOR_HUESOS = (250, 246, 240)
-OPACIDAD_HUESOS = 0.45
+DECIMALES = 4                  # 1e-4 de la imagen = 0.06 px a 640: de sobra para dibujar; JSON más ligero
+ESTELA_MAX = 32                # Puntos máximos de la estela que se mandan (se submuestrea)
 
 # Alfabeto: (clave, cómo se hace, movimiento). Lámina oficial SEP
 GUIA = [
@@ -93,64 +88,41 @@ def mano_principal(vistas, anterior):
                                              lado == anterior))
 
 
-# --- Video: solo los puntos de las manos ------------------------------------------
-def _pt(p):
-    return int(p[0]), int(p[1])
-
-
-def dibujar_estela(frame, tray, punto, color):
-    """Recorrido reciente del punto rastreado (se ve cómo se traza la J, la Z, el ?...): fino y tenue al inicio."""
-    pts = tray.serie_px(punto)
-    for i in range(1, len(pts)):
-        k = i / len(pts)
-        tono = tuple(int(c * k + 40 * (1 - k)) for c in color)
-        cv2.line(frame, _pt(pts[i - 1]), _pt(pts[i]), tono, 1 + int(3 * k), cv2.LINE_AA)
-
-
-def dibujar_manos(frame, manos, vistas, canales):
-    """Esqueleto translúcido y articulaciones en el color de cada mano. Sin textos: las etiquetas son HTML."""
-    visibles = [lado for lado in LADOS if manos[lado].rasgos is not None]
-    if not visibles:
-        return
-    capa = frame.copy()
-    for lado in visibles:
-        p = manos[lado].rasgos.p
-        for a, b in CONEXIONES_MANO:
-            cv2.line(capa, _pt(p[a]), _pt(p[b]), COLOR_HUESOS, 2, cv2.LINE_AA)
-    cv2.addWeighted(capa, OPACIDAD_HUESOS, frame, 1 - OPACIDAD_HUESOS, 0, frame)
-    for lado in visibles:
-        p, color = manos[lado].rasgos.p, COLOR_LADO[lado]
-        for k, q in enumerate(p):
-            if k in PUNTAS:
-                cv2.circle(frame, _pt(q), 7, color, 1, cv2.LINE_AA)   # halo en las yemas
-            cv2.circle(frame, _pt(q), 4 if k in PUNTAS else 3, color, -1, cv2.LINE_AA)
-        sena = vistas[lado].sena
-        if sena in PUNTO_DE_POSE and canales[lado].tray.vel > 0.6:   # estela solo mientras la mano se mueve
-            dibujar_estela(frame, canales[lado].tray, PUNTO_DE_POSE[sena], color)
-
-
 # --- Estado para el navegador -----------------------------------------------------
 def config_web():
     """Lo que no cambia (se manda una vez al conectar): guía del alfabeto, umbral de las cejas, segundos del
-    hold-to-type y, para el Modo Práctica, la configuración base de cada seña con movimiento (J <- I/Y...)."""
+    hold-to-type, huesos de la mano (pares de puntos) y, para el Modo Práctica, la configuración base de cada
+    seña con movimiento (J <- I/Y...)."""
     bases = {}
     for gesto, poses, *_ in GESTOS_DINAMICOS:
         for g in (sorted(poses) if gesto == "QX" else [gesto]):      # Q y X comparten trazo; base = sí mismas
             bases.setdefault(g, set()).update({g} if gesto == "QX" else poses - POSES_SILENCIOSAS)
     return {"tipo": "config", "umbral_cejas": CEJAS_UMBRAL, "segundos": SEGUNDOS_PARA_ESCRIBIR,
-            "bases": {g: sorted(p) for g, p in bases.items()},
+            "conexiones": CONEXIONES_MANO, "bases": {g: sorted(p) for g, p in bases.items()},
             "guia": [{"clave": c, "desc": d, "mov": m} for c, d, m in GUIA]}
 
 
-def _mano_web(em, vista, ancho, alto):
-    caja = None
+def _normalizar(x, y, ancho, alto):
+    return [round(float(x) / ancho, DECIMALES), round(float(y) / alto, DECIMALES)]
+
+
+def _mano_web(em, vista, tray, ancho, alto):
+    """Una mano para el navegador. `puntos`: 21 x [x, y, z] normalizados a la imagen espejada (x, y en 0-1;
+    z = profundidad relativa a la muñeca en la escala del ancho, negativa hacia la cámara)."""
+    caja = puntos = estela = None
     if em.rasgos is not None:
         p = em.rasgos.p
-        caja = [round(float(p[:, 0].min()) / ancho, 4), round(float(p[:, 1].min()) / alto, 4),
-                round(float(p[:, 0].max()) / ancho, 4), round(float(p[:, 1].max()) / alto, 4)]
+        caja = _normalizar(p[:, 0].min(), p[:, 1].min(), ancho, alto) + _normalizar(p[:, 0].max(), p[:, 1].max(),
+                                                                                       ancho, alto)
+        if em.img is not None:
+            puntos = [_normalizar(q[0], q[1], ancho, alto) + [round(float(q[2]) / ancho, DECIMALES)] for q in em.img]
+        if vista.sena in PUNTO_DE_POSE and tray.vel > 0.6:          # estela solo mientras la mano se mueve
+            serie = tray.serie_px(PUNTO_DE_POSE[vista.sena])
+            paso = max(1, len(serie) // ESTELA_MAX)
+            estela = [_normalizar(q[0], q[1], ancho, alto) for q in serie[::paso]]
     pista = PISTA_TRAZO.get(vista.sena) if vista.estado in ("sostener", "registrada", "mover", "pose") else None
     return {"sena": vista.sena, "estado": vista.estado, "progreso": round(vista.progreso * 100, 1),
-            "caja": caja, "pista": pista}
+            "caja": caja, "pista": pista, "puntos": puntos, "estela": estela}
 
 
 def lineas_diagnostico(manos, canales, analizador):
@@ -174,8 +146,9 @@ def lineas_diagnostico(manos, canales, analizador):
     return lineas
 
 
-def estado_web(traductor, manos, vistas, principal, progreso, fps, voz, tamano, diagnostico):
-    """Todo lo que la interfaz necesita en un frame. Progresos en 0-100."""
+def estado_web(traductor, manos, vistas, principal, progreso, fps, voz, tamano, diagnostico, tiempos):
+    """Todo lo que la interfaz necesita en un frame. Progresos en 0-100. `tiempos`: número de fotograma, hora de
+    captura (ms de reloj de pared, para que el navegador mida la latencia), ms de proceso y descartados."""
     ancho, alto = tamano
     vp = vistas[principal] if principal else VistaMano(None, "ninguna", 0.0)
     an = traductor.analizador
@@ -183,11 +156,12 @@ def estado_web(traductor, manos, vistas, principal, progreso, fps, voz, tamano, 
     return {
         "tipo": "estado",
         "sena": vp.sena, "estado": vp.estado, "progreso": round(progreso * 100, 1), "lado": principal,
-        "manos": {lado: _mano_web(manos[lado], vistas[lado], ancho, alto) for lado in LADOS},
+        "manos": {lado: _mano_web(manos[lado], vistas[lado], traductor.canales[lado].tray, ancho, alto)
+                  for lado in LADOS},
         "texto": limpiar_texto(traductor.escritor.texto),
         "rostro": {"modo": an.modo, "pregunta": round(an.progreso_pregunta * 100),
                    "calibracion": round(an.progreso_calibracion * 100), "cejas": round(an.ratio_cejas, 3),
                    "cabeza": None if pose is None else [round(pose.pitch), round(pose.yaw), round(pose.roll)]},
-        "voz": voz, "fps": round(fps, 1), "tamano": [ancho, alto],
+        "voz": voz, "fps": round(fps, 1), "tamano": [ancho, alto], "tiempos": tiempos,
         "diagnostico": lineas_diagnostico(manos, traductor.canales, an) if diagnostico else None,
     }

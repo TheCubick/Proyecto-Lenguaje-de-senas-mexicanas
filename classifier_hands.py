@@ -804,6 +804,7 @@ class EstadoMano:
     gesto: Optional[str] = None             # seña con movimiento completada en este frame
     moviendo: bool = False
     progreso: float = 0.0                   # avance del hold-to-type (0 a 1)
+    img: Optional[np.ndarray] = None        # 21x3 filtrado (x, y en píxeles; z en la escala de x): para dibujar
 
 
 class CanalMano:
@@ -841,7 +842,7 @@ class CanalMano:
         pose = self.estabilizador.actualizar(pose_cruda)
         self.tray.agregar(ahora, r, pose_cruda)
         gesto = self.reconocedor.evaluar(self.tray, ahora)
-        return EstadoMano(self.lado, r, pose_cruda, pose, gesto, self.tray.vel > V_QUIETO)
+        return EstadoMano(self.lado, r, pose_cruda, pose, gesto, self.tray.vel > V_QUIETO, img=img)
 
 
 # --- Estabilización temporal ---------------------------------------------------

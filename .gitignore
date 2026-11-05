@@ -10,3 +10,11 @@ __pycache__/
 # Archivos del sistema
 Desktop.ini
 Thumbs.db
+
+# Dataset generado y videos de entrada (los videos de terceros no se publican; dataset_config.json sí se versiona)
+dataset/
+*.json.bak
+videos/
+*.mp4
+*.webm
+*.mkv

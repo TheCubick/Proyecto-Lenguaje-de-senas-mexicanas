@@ -1,14 +1,16 @@
 """Traductor de Lengua de Señas Mexicana (LSM): dos manos + rostro + voz, en tiempo real con una cámara web.
 
-Motor de captura: lee la cámara, procesa cada frame y publica (JPEG con los puntos de las manos, estado JSON).
-No abre ventanas: la interfaz es web (server.py + static/). Ejecutar con `python server.py` (o `python main.py`).
+Motor: procesa siempre el fotograma más reciente de la cámara (camara.py, hilo propio) y publica el estado JSON:
+señas, texto, rostro y coordenadas de las manos. El video para la vista previa lo transmite server.py por
+/video_feed (MJPEG) desde la misma cámara; el navegador dibuja el esqueleto encima. Ejecutar con `python server.py`.
 
-Módulos:  classifier_hands.py  manos: lateralidad, One-Euro, rasgos 3D, alfabeto estático y trazos
+Módulos:  camara.py            captura en un hilo propio (único dueño de la cámara) y JPEG de la vista previa
+            classifier_hands.py  manos: lateralidad, One-Euro, rasgos 3D, alfabeto estático y trazos
             classifier_face.py   rostro: pose 3D (solvePnP), cejas (pregunta), negar / asentir
             traductor.py         hold-to-type por mano y orquestación de un frame (Traductor.paso)
             voice_engine.py      voz asíncrona (pyttsx3) y puente al hardware (mock serial)
-            ui_panel.py          puntos de las manos sobre el video y estado JSON para el navegador
-            server.py            servidor web local (FastAPI + WebSocket) y apertura del navegador
+            ui_panel.py          estado JSON para el navegador (incluye las coordenadas de las manos)
+            server.py            servidor web local (FastAPI: WebSocket + video MJPEG) y apertura del navegador
 """
 import json
 import queue
@@ -20,7 +22,7 @@ import mediapipe as mp
 from classifier_face import PROCESAR_ROSTRO_CADA, detectar_rostro
 from classifier_hands import LADOS, MAX_MANOS, ProgresoSuave, detectar_manos
 from traductor import Traductor
-from ui_panel import CALIDAD_JPEG, dibujar_manos, estado_web, mano_principal, vista_mano
+from ui_panel import estado_web, mano_principal, vista_mano
 from voice_engine import VOZ_HABILITADA, PoliticaVoz, VozAsincrona, enviar_a_hardware, limpiar_texto
 
 mp_hands = mp.solutions.hands
@@ -31,17 +33,17 @@ ACCIONES_TEXTO = ("ESPACIO", "BORRAR", "LIMPIAR")   # Botones / teclas de la int
 
 def _error(publicar, mensaje):
     print(f"[ERROR] {mensaje}")
-    publicar(None, json.dumps({"tipo": "error", "mensaje": mensaje}, ensure_ascii=False))
+    publicar(json.dumps({"tipo": "error", "mensaje": mensaje}, ensure_ascii=False))
 
 
-def capturar(publicar, comandos, detener):
-    """Bucle de captura (en su propio hilo).
+def capturar(cam, publicar, comandos, detener):
+    """Bucle de procesamiento (en su propio hilo; la lectura de la cámara va en otro, ver camara.py).
 
-    publicar(jpeg, estado_json): entrega cada frame; comandos: cola con acciones de la interfaz ("ESPACIO",
-    "BORRAR", "LIMPIAR", "DIAGNOSTICO", "RECALIBRAR"); detener: threading.Event que termina el bucle."""
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        _error(publicar, "No se pudo acceder a la cámara. Verifica que esté conectada y que otra app no la use.")
+    cam: CamaraReciente (la abre y la cierra server.py, que también la usa para el video); publicar(estado_json):
+    entrega el estado de cada frame; comandos: cola con acciones de la interfaz ("ESPACIO", "BORRAR", "LIMPIAR",
+    "DIAGNOSTICO", "RECALIBRAR"); detener: threading.Event que termina el bucle."""
+    if not cam.activa:
+        _error(publicar, "El motor no pudo abrir la cámara. Verifica que esté conectada y que otra app no la use.")
         return
 
     traductor = Traductor()
@@ -54,7 +56,7 @@ def capturar(publicar, comandos, detener):
     rostro = None
     principal = None
     fps, t_frame_anterior = 0.0, time.monotonic()
-    n_frame = 0
+    n_frame, visto = 0, 0
 
     print("Traductor LSM iniciado. Mantén la cara neutra un momento para calibrar.")
 
@@ -63,11 +65,15 @@ def capturar(publicar, comandos, detener):
             mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=False,
                                   min_detection_confidence=0.5, min_tracking_confidence=0.5) as face_mesh:
         try:
-            while cap.isOpened() and not detener.is_set():
-                ok, frame = cap.read()
-                if not ok:
+            while not detener.is_set():
+                paquete = cam.leer(visto)              # el más nuevo; los que llegaron mientras procesábamos, no
+                if paquete is None:
+                    if cam.activa:
+                        continue
                     _error(publicar, "Se perdió la señal de la cámara.")
                     break
+                visto, frame, t_captura = paquete
+                t_inicio = time.perf_counter()         # monotonic() en Windows tiene ~16 ms de resolución
 
                 frame = cv2.flip(frame, 1)  # Espejo (MediaPipe espera la imagen espejada para la lateralidad)
                 alto, ancho = frame.shape[:2]
@@ -120,14 +126,14 @@ def capturar(publicar, comandos, detener):
                 if dt > 0:
                     fps = 1.0 / dt if fps == 0 else fps * 0.9 + (1.0 / dt) * 0.1
 
-                # --- Salida: video con los puntos de las manos + estado para el navegador ---
-                dibujar_manos(frame, manos, vistas, traductor.canales)
-                ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, CALIDAD_JPEG])
+                # --- Salida: solo el estado (coordenadas incluidas); el navegador pone el video ---
+                tiempos = {"n": visto, "captura_ms": round(t_captura * 1000),
+                           "proceso_ms": round((time.perf_counter() - t_inicio) * 1000, 1),
+                           "descartados": cam.descartados}
                 estado = estado_web(traductor, manos, vistas, principal, progreso, fps, voz.estado, (ancho, alto),
-                                    diagnostico)
-                publicar(jpeg.tobytes() if ok else None, json.dumps(estado, ensure_ascii=False))
+                                    diagnostico, tiempos)
+                publicar(json.dumps(estado, ensure_ascii=False, separators=(",", ":")))
         finally:
-            cap.release()
             voz.cerrar()
 
     print(f"Texto final: {limpiar_texto(escritor.texto)!r}")

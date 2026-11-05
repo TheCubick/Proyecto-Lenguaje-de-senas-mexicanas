@@ -2,8 +2,8 @@
 
 > **Documentación técnica oficial**
 > **Materia:** Inteligencia Artificial
-> **Stack del backend:** Python 3.12 · MediaPipe 0.10.18 · OpenCV 4.11 (captura, codificación JPEG y `solvePnP`) · NumPy · pyttsx3 · FastAPI + uvicorn (HTTP y WebSocket)
-> **Stack del frontend:** HTML5 · CSS3 (variables, container queries, `color-mix`) · JavaScript sin dependencias (WebSocket nativo, Canvas 2D)
+> **Stack del backend:** Python 3.12 · MediaPipe 0.10.18 · OpenCV 4.11 (captura y `solvePnP`) · NumPy · pyttsx3 · FastAPI + uvicorn (HTTP y WebSocket)
+> **Stack del frontend:** HTML5 · CSS3 (variables, container queries, `color-mix`) · JavaScript sin dependencias (WebSocket nativo, video MJPEG en `<img>`, Canvas 2D)
 > **Arquitectura:** cliente-servidor local (`127.0.0.1:5000`)
 > **Repositorio:** https://github.com/TheCubick/Proyecto-Lenguaje-de-se-a
 
@@ -55,7 +55,7 @@ El sistema traduce **en tiempo real** el **alfabeto dactilológico completo de l
 
 La LSM no se comunica solo con las manos: los **componentes no manuales** (expresión facial, movimientos de cabeza) tienen función gramatical. Por eso la arquitectura es **multimodal**.
 
-El sistema se entrega como una **aplicación web local**. Un backend en Python captura la cámara, ejecuta toda la inferencia y transmite por WebSocket el video y el estado del reconocimiento. Un frontend en el navegador los presenta y añade un **Modo Práctica** para aprender el alfabeto con retroalimentación inmediata. La interfaz no reconoce nada por sí misma: solo presenta lo que calcula el backend (sección 2.5).
+El sistema se entrega como una **aplicación web local**. Un backend en Python captura la cámara, ejecuta toda la inferencia y transmite por dos canales: el **video** de la cámara (MJPEG) y, por WebSocket, el **estado del reconocimiento con las coordenadas de las manos**. El navegador muestra el video y dibuja el esqueleto encima. Un frontend en el navegador los presenta y añade un **Modo Práctica** para aprender el alfabeto con retroalimentación inmediata. La interfaz no reconoce nada por sí misma: solo presenta lo que calcula el backend (sección 2.5).
 
 ### 1.2 Problema que atiende
 
@@ -112,22 +112,25 @@ Las señas se definieron a partir de la **lámina oficial "Abecedario en Lengua 
                 │ Escritor: hold-to-type 1.5 s POR MANO, texto  │   (Traductor.paso orquesta todo:
                 └──────┬───────────────────────────────┬────────┘    el mismo código en vivo y en pruebas)
        ┌───────────────▼──────────────────┐   ┌────────▼────────────────┐
-       │ ui_panel: esqueleto de las manos │   │ Hilo de voz (pyttsx3)   │
-       │ sobre el frame → JPEG            │   │ + enviar_a_hardware()   │
-       │ estado_web() → JSON              │   └─────────────────────────┘
+       │ ui_panel.estado_web() → JSON     │   │ Hilo de voz (pyttsx3)   │
+       │ señas · texto · rostro ·         │   │ + enviar_a_hardware()   │
+       │ coordenadas 21×[x,y,z] por mano  │   └─────────────────────────┘
        └───────────────┬──────────────────┘
-                       │ Difusor (último paquete)          HILO DE CAPTURA (main.capturar)
- ══════════════════════╪═════════════════════════════════════════════════════════════════
+                       │ Difusor (último estado)            HILO DE PROCESO (main.capturar)
+ ══════════════════════╪══════════════════════════════════════════════════════════════════
                        │                                    SERVIDOR (server.py, asyncio)
        ┌───────────────▼──────────────────┐
-       │ FastAPI · WebSocket /ws          │◀── acciones {"accion": ...} ── cola → hilo de captura
-       │ binario: JPEG · texto: JSON      │
+       │ FastAPI · WebSocket /ws          │◀── acciones {"accion": ...} ── cola → hilo de proceso
+       │ texto: JSON (~0.5-1.6 KB)        │
        └───────────────┬──────────────────┘
                        │ ws://127.0.0.1:5000/ws
        ┌───────────────▼──────────────────────────────────────────────────────┐
-       │ NAVEGADOR (static/): video en <canvas>, anillo hold-to-type, manos,  │
-       │ rostro, subtítulos, guía, tema claro/oscuro y Modo Práctica          │
+       │ NAVEGADOR (static/): <img> con el video + <canvas> con el esqueleto, │
+       │ anillo hold-to-type, manos, rostro, subtítulos, guía,                │
+       │ tema claro/oscuro y Modo Práctica                                    │
        └──────────────────────────────────────────────────────────────────────┘
+   (En paralelo, GET /video_feed transmite en MJPEG el fotograma más nuevo de CamaraReciente sin esperar a
+    MediaPipe. Python es el único dueño de la cámara; ver sección 2.5.1.)
 ```
 
 ---
@@ -402,45 +405,68 @@ Tras un gesto de cabeza hay un enfriamiento de 1.2 s y las cejas se ignoran 0.8 
 
 ### 2.5 Arquitectura cliente-servidor
 
-**Implementado.** La percepción y la presentación están separadas en dos procesos lógicos que se comunican por un WebSocket local:
+**Implementado.** La percepción y la presentación están separadas en dos procesos lógicos que se comunican por HTTP y WebSocket locales:
 
 | Capa | Archivos | Responsabilidad |
 |---|---|---|
-| **Motor** (hilo de captura) | `main.py` → `classifier_hands`, `classifier_face`, `traductor`, `voice_engine`, `ui_panel` | Leer la cámara, reconocer manos y rostro, escribir el texto, hablar, dibujar el esqueleto de las manos sobre el frame y serializar el estado |
-| **Servidor** | `server.py` (FastAPI + uvicorn) | Servir los archivos estáticos, transmitir video y estado a cada cliente y recibir sus acciones |
-| **Cliente** | `static/index.html`, `estilos.css`, `app.js` | Presentar el video y el estado, ofrecer controles, tema visual y Modo Práctica |
+| **Motor** (hilos de cámara y de proceso) | `camara.py`, `main.py` → `classifier_hands`, `classifier_face`, `traductor`, `voice_engine`, `ui_panel` | Leer la cámara, reconocer manos y rostro, escribir el texto, hablar y serializar el estado con las coordenadas de las manos |
+| **Servidor** | `server.py` (FastAPI + uvicorn) | Abrir y cerrar la cámara, servir los archivos estáticos, transmitir el **estado** por WebSocket (`/ws`) y el **video** por MJPEG (`/video_feed`), y recibir las acciones |
+| **Cliente** | `static/index.html`, `estilos.css`, `app.js` | Mostrar el video, dibujar el esqueleto encima, presentar el estado, ofrecer controles, tema visual y Modo Práctica |
+
+**Dos canales separados:**
+- **Estado** por WebSocket: JSON de unos 0.5 KB por fotograma sin manos y 1.6 KB con dos manos.
+- **Video** por un flujo MJPEG (`multipart/x-mixed-replace`) que un `<img>` muestra de forma nativa.
+
+El video sale del fotograma más nuevo **sin esperar a MediaPipe**, así que la imagen nunca se retrasa por el reconocimiento; el esqueleto llega unos milisegundos después por el otro canal.
 
 #### 2.5.1 Modelo de concurrencia
 
 | Hilo | Qué ejecuta | Por qué está separado |
 |---|---|---|
-| **Captura** (`main.capturar`) | Bucle cámara → MediaPipe → `Traductor.paso()` → voz y hardware → JPEG + JSON | MediaPipe y OpenCV son bloqueantes; no deben detener el servidor |
+| **Cámara** (`CamaraReciente`) | `cap.read()` sin parar; guarda solo el último fotograma con su hora de captura | Que el proceso siempre tome la imagen más nueva (ver abajo) |
+| **Proceso** (`main.capturar`) | Fotograma más reciente → MediaPipe → `Traductor.paso()` → voz y hardware → JSON | MediaPipe es bloqueante; no debe detener el servidor ni la lectura de la cámara |
 | **Voz** (`VozAsincrona`) | Motor SAPI5 de `pyttsx3` | Hablar tarda segundos; nunca bloquea la captura (sección 2.4) |
 | **Bucle de eventos** (uvicorn) | Conexiones HTTP y WebSocket, una corrutina por cliente | E/S de red asíncrona |
-| **Grupo de hilos de asyncio** | `Difusor.esperar()` vía `asyncio.to_thread` | Espera bloqueante del siguiente frame sin congelar el bucle de eventos |
+| **Grupo de hilos de asyncio** | `Difusor.esperar()`, `CamaraReciente.leer(..., consumir=False)` y `a_jpeg` vía `asyncio.to_thread` | Esperas bloqueantes y compresión JPEG sin congelar el bucle de eventos |
 
-**Escritor único.** Solo el hilo de captura modifica el texto y el estado del reconocimiento. Las acciones del navegador (Espacio, Borrar, Limpiar, Diagnóstico, Recalibrar) entran a una `queue.Queue` y el hilo de captura las aplica al **inicio del siguiente fotograma**. Así no hace falta ningún candado sobre `Escritor` ni sobre `AnalizadorFacial`.
+**Escritor único.** Solo el hilo de proceso modifica el texto y el estado del reconocimiento. Las acciones del navegador (Espacio, Borrar, Limpiar, Diagnóstico, Recalibrar) entran a una `queue.Queue` y el hilo de proceso las aplica al **inicio del siguiente fotograma**. Así no hace falta ningún candado sobre `Escritor` ni sobre `AnalizadorFacial`.
+
+**Fotograma más reciente (`camara.py`).** Si la lectura y el proceso están en el mismo bucle, la cámara acumula imágenes en su búfer mientras MediaPipe trabaja, y cada vuelta procesa una imagen más vieja que la anterior. `CamaraReciente` lee en su propio hilo y conserva solo la última imagen; el proceso la pide con `leer(visto)` y espera si todavía no hay una nueva. Las que se reemplazaron sin procesarse se cuentan en `descartados`. Cada imagen lleva su hora de captura en reloj de pared (`time.time()`), que el navegador compara con `Date.now()` para medir la latencia, porque ambos corren en la misma computadora.
+
+**Python es el único dueño de la cámara.** Una versión intermedia hacía que el navegador abriera la misma cámara con `getUserMedia` solo para mostrarla. En la laptop de pruebas, Windows no permitió compartirla: Chrome recibía `NotReadableError` porque Python ya la tenía abierta. Se evaluaron dos alternativas:
+
+| Alternativa | Ventajas | Desventajas | Decisión |
+|---|---|---|---|
+| **El navegador es el dueño** y sube fotogramas a Python por WebSocket | El video se ve nativo; se parece a un despliegue en la nube | Chrome frena o pausa las pestañas en segundo plano, así que el **reconocimiento, la voz y el hardware se detendrían** al cambiar de ventana. Exige subir y comprimir fotogramas en el navegador, controlar el flujo y depender del permiso de cámara | Descartada |
+| **Python es el dueño** y transmite video MJPEG | El motor no depende de que el navegador esté al frente (sirve también para la pantalla OLED del roadmap). El video y el esqueleto salen de la misma cámara, así que siempre coinciden. Reusa `CamaraReciente`; ~30 líneas | Comprimir JPEG cuesta ~1 ms por fotograma (medido) | **Elegida** |
+
+**Una cámara, dos lectores.** El proceso lee con `leer(visto)` y **consume** el fotograma, lo que alimenta el conteo de `descartados`. El flujo de video lee con `leer(visto, consumir=False)`: toma la misma imagen más reciente sin alterar ese conteo y la comprime con `a_jpeg` (calidad 70, ancho máximo 640 px). Si el `<img>` no recibe video (por ejemplo, un `503` porque la cámara no abrió), la interfaz pasa a modo **solo esqueleto**: dibuja las manos sobre un fondo oscuro con cuadrícula y lo indica con una etiqueta.
 
 #### 2.5.2 Difusión con semántica de "último valor" (`Difusor`)
 
-El `Difusor` guarda **un solo paquete**, el más reciente (JPEG, JSON), con un número de secuencia y una `threading.Condition`. Cada cliente recuerda el último número que envió y pide el siguiente:
+El `Difusor` guarda **un solo estado**, el más reciente (JSON), con un número de secuencia y una `threading.Condition`. Cada cliente recuerda el último número que envió y pide el siguiente:
 
 ```
-captura ──publicar(jpeg, json)──▶ [ n = 1042 | paquete ] ──esperar(visto=1040)──▶ cliente A (recibe 1042)
-                                                         ──esperar(visto=1042)──▶ cliente B (espera al 1043)
+proceso ──publicar(json)──▶ [ n = 1042 | estado ] ──esperar(visto=1040)──▶ cliente A (recibe 1042)
+                                                  ──esperar(visto=1042)──▶ cliente B (espera al 1043)
 ```
 
-- **Sin colas por cliente:** si un navegador va lento, **se salta fotogramas** en lugar de acumular retraso. La latencia queda acotada por un solo fotograma.
+La misma política de "último valor" se aplica en todas las etapas: cámara (`CamaraReciente`), red (`Difusor` para el estado; el flujo MJPEG también salta a la imagen más nueva) y dibujo (`requestAnimationFrame` solo pinta el estado más nuevo).
+
+- **Sin colas por cliente:** si un navegador va lento, **se salta estados** en lugar de acumular retraso. La latencia queda acotada por un solo fotograma.
 - **Varios clientes** pueden ver la misma sesión; todos comparten el mismo texto.
 - La espera tiene un tiempo límite de 0.5 s para que el servidor pueda cerrarse aunque la cámara se detenga.
 
-#### 2.5.3 Protocolo del WebSocket (`/ws`)
+#### 2.5.3 Protocolo: WebSocket (`/ws`) y video (`/video_feed`)
+
+**Video:** `GET /video_feed` responde `multipart/x-mixed-replace; boundary=frame`. Cada parte es un JPEG con sus encabezados `Content-Type: image/jpeg` y `Content-Length`. Los fotogramas van **sin espejar** (el navegador los espeja con CSS) y la respuesta lleva `Cache-Control: no-store`. Si la cámara no está disponible, responde `503`. El flujo termina solo cuando el servidor se cierra o la cámara se pierde.
+
+**WebSocket:**
 
 | Dirección | Tipo de mensaje | Cuándo | Contenido |
 |---|---|---|---|
-| Servidor → cliente | Texto `{"tipo": "config"}` | Una vez, al conectar | `guia` (30 señas con descripción y movimiento), `umbral_cejas`, `segundos` (hold-to-type) y `bases` (configuración base de cada seña con movimiento, p. ej. `J ← I, Y`) |
-| Servidor → cliente | **Binario** | Cada fotograma | JPEG 640×480, calidad 80, con el esqueleto de las manos ya dibujado y **sin textos** |
-| Servidor → cliente | Texto `{"tipo": "estado"}` | Cada fotograma | Estado completo (tabla siguiente) |
+| Servidor → cliente | Texto `{"tipo": "config"}` | Una vez, al conectar | `guia` (30 señas con descripción y movimiento), `umbral_cejas`, `segundos` (hold-to-type), `conexiones` (los 21 huesos de la mano como pares de índices de MediaPipe) y `bases` (configuración base de cada seña con movimiento, p. ej. `J ← I, Y`) |
+| Servidor → cliente | Texto `{"tipo": "estado"}` | Cada fotograma procesado | Estado completo con coordenadas (tabla siguiente). Es el **único** mensaje por fotograma |
 | Servidor → cliente | Texto `{"tipo": "error"}` | Si no hay cámara o se pierde la señal | `mensaje` legible; se conserva para los clientes que se conecten después |
 | Cliente → servidor | Texto `{"accion": ...}` | Botón o tecla | `ESPACIO`, `BORRAR`, `LIMPIAR`, `DIAGNOSTICO`, `RECALIBRAR` o `SALIR`; cualquier otro valor o JSON inválido se ignora |
 
@@ -449,39 +475,55 @@ Campos del mensaje `estado` (`ui_panel.estado_web`):
 | Campo | Tipo | Significado |
 |---|---|---|
 | `sena`, `estado`, `progreso`, `lado` | texto · texto · 0-100 · `"Izq"`/`"Der"` | Seña de la **mano principal** (la que acaba de registrar o la que más avanzó). `estado`: `ninguna`, `sostener`, `mover`, `pose` (necesita trazo) o `registrada` |
-| `manos.Izq`, `manos.Der` | objeto | Por mano: `sena`, `estado`, `progreso`, `caja` (recuadro normalizado 0-1 para colocar la etiqueta HTML) y `pista` (`"o traza una J"`…) |
+| `manos.Izq`, `manos.Der` | objeto | Por mano: `sena`, `estado`, `progreso`, `caja` (recuadro normalizado 0-1 para colocar la etiqueta HTML), `pista` (`"o traza una J"`…), `puntos` y `estela` (abajo) |
+| `manos.*.puntos` | 21 × `[x, y, z]` o `null` | Coordenadas **filtradas con One-Euro** de los 21 puntos, en la imagen **espejada**: `x`, `y` en 0-1 respecto al ancho y alto; `z` = profundidad relativa a la muñeca en la escala del ancho (negativa hacia la cámara). 4 decimales (0.06 px a 640) |
+| `manos.*.estela` | lista de `[x, y]` o `null` | Recorrido reciente del punto que sigue el trazo (máx. 32 puntos), solo mientras la mano se mueve |
+| `tiempos` | objeto | `n` (número de fotograma), `captura_ms` (hora de captura, ms de reloj de pared), `proceso_ms` (MediaPipe + `Traductor.paso`) y `descartados` (fotogramas viejos que no se procesaron) |
 | `texto` | texto | Texto acumulado, ya con `limpiar_texto` aplicado |
 | `rostro` | objeto | `modo` (`SIN_ROSTRO`, `TAPADO`, `CALIBRANDO`, `NEUTRO`, `CEJAS`, `PREGUNTA`, `NEGACION`, `AFIRMACION`), `pregunta` y `calibracion` (0-100), `cejas` (razón contra la base) y `cabeza` (`[pitch, yaw, roll]` en grados) |
 | `voz`, `fps`, `tamano` | texto · número · `[ancho, alto]` | Estado de la voz, FPS del motor y resolución del video |
 | `diagnostico` | lista de textos o `null` | Rasgos 3D por mano y desviaciones de la cabeza, solo con el diagnóstico activo |
 
-> **Por qué el video viaja como binario y no en base64:** un JPEG en base64 ocupa un 33 % más y obliga a decodificar texto en el navegador. Como mensaje binario se convierte directamente en imagen con `createImageBitmap`.
+> **Por qué el video va por un canal aparte.** La primera versión web mandaba por el WebSocket un JPEG con el esqueleto ya dibujado, **después** de MediaPipe. Así, la imagen esperaba al reconocimiento. Separar los canales tiene cuatro ventajas:
+> - el video sale en cuanto llega de la cámara;
+> - el JSON es 7 a 20 veces más ligero que aquel mensaje;
+> - el `<img>` decodifica el MJPEG de forma nativa, sin JavaScript;
+> - el esqueleto se dibuja con los colores del tema.
+>
+> El costo es que el esqueleto va unos milisegundos detrás de la imagen (sección 2.5.6).
 
 #### 2.5.4 Ciclo de vida
 
-1. `python server.py` crea el servidor uvicorn. Al arrancar (`lifespan`) lanza el hilo de captura y, un segundo después, abre `http://localhost:5000` con `webbrowser`.
-2. Si la cámara no abre, el hilo publica un mensaje `error` y termina; el servidor sigue arriba para que la interfaz lo muestre.
-3. **Cierre:** el botón *Detener* (con confirmación en dos pasos) envía `SALIR`, o se pulsa Ctrl+C en la terminal. Uvicorn cierra las conexiones (`timeout_graceful_shutdown = 2 s`). Después, el `lifespan` activa el evento `detener` y espera al hilo de captura, que libera la cámara y cierra la voz.
+1. `python server.py` crea el servidor uvicorn. Al arrancar (`lifespan`), abre la cámara con `CamaraReciente` y lanza el hilo de proceso. Un segundo después abre `http://localhost:5000` con `webbrowser`.
+2. El navegador se conecta, recibe `config` y, con el **primer estado**, apunta el `<img>` a `/video_feed`. El primer fotograma se detecta en el bucle de dibujo (`naturalWidth > 0`), porque un flujo MJPEG no dispara `load` de forma fiable en todos los navegadores.
+3. Si el motor no puede abrir la cámara, publica un mensaje `error` y termina; el servidor sigue arriba para que la interfaz lo muestre.
+4. **Cierre:** el botón *Detener* (con confirmación en dos pasos) suelta el `<img>` y envía `SALIR`; también se puede pulsar Ctrl+C en la terminal. El flujo MJPEG y el WebSocket revisan `should_exit` y terminan solos; uvicorn cierra las conexiones (`timeout_graceful_shutdown = 2 s`). Después, el `lifespan` activa `detener`, espera al hilo de proceso (que cierra la voz) y libera la cámara.
 
 #### 2.5.5 Seguridad y privacidad
 
 - El servidor escucha **solo en `127.0.0.1`**: ni el video ni el texto son accesibles desde otra computadora de la red.
-- No se guarda ningún fotograma: cada JPEG existe en memoria hasta que llega el siguiente.
+- No se guarda ningún fotograma: Python solo conserva en memoria la última imagen, y el video sale únicamente por `127.0.0.1`.
 - Están desactivadas las rutas automáticas de documentación de FastAPI (`/docs`, `/redoc`, `/openapi.json`).
 - No hay autenticación porque el alcance es local. Exponerlo en una red exigiría autenticación y TLS (`wss://`).
 
 #### 2.5.6 Desempeño medido
 
-Prueba en vivo con la cámara real y un cliente WebSocket durante 8 s:
+Prueba en vivo con la cámara real y dos clientes en Python durante 8 s: uno de WebSocket y uno que leía `/video_feed` al mismo tiempo. La cámara estaba encendida pero **sin manos a la vista**:
 
-| Medida | Resultado |
-|---|---|
-| Fotogramas recibidos por el cliente | **30.1 FPS** (243 JPEG y 243 estados, sin pérdidas) |
-| Tamaño del video | **11.3 KB** por fotograma en promedio (≈ 2.7 Mbit/s a 30 FPS) |
-| Acciones del navegador | `ESPACIO`, `BORRAR`, `DIAGNOSTICO` y `RECALIBRAR` aplicadas; JSON inválido ignorado sin errores |
-| Cierre con `SALIR` | **0.5 s** hasta liberar la cámara y terminar el proceso |
+| Medida | Primera versión (JPEG por WebSocket) | Versión actual (JSON + MJPEG) |
+|---|---|---|
+| Estados recibidos por el cliente | 30.1 por segundo | **30.2 por segundo**, sin saltos en la numeración |
+| Bytes de estado por fotograma | ~11.3 KB (JPEG) + estado | **0.54 KB** sin manos; **1.57 KB** con dos manos (medido con manos sintéticas) |
+| Video | después de MediaPipe | **30.1 FPS** por `/video_feed`, 227 de 227 JPEG válidos, ~16 KB cada uno, sin esperar a MediaPipe |
+| Compresión JPEG (calidad 70, 640×480) | — | **1.0 ms** de mediana (máx. 1.8 ms), en 40 fotogramas reales |
+| Captura → recepción del estado en el cliente | no medida | **16.1 ms** de mediana (p95 22.3 ms) |
+| Proceso del motor (MediaPipe + `Traductor.paso`) | no medida | **15.6 ms** de mediana, sin manos |
+| Fotogramas descartados por el proceso | — | 0: el proceso tarda menos que los 33 ms entre fotogramas, y leer el video no consume fotogramas |
+| Cierre con `SALIR` con el video abierto | 0.5 s | **0.51 s**; el flujo MJPEG termina limpio 0.03 s después de `SALIR` |
 
-La latencia de extremo a extremo desde la cámara hasta la pantalla no se ha medido todavía.
+Lo que falta medir:
+- **Con manos en escena:** MediaPipe Hands tarda más (25-76 ms según la carga y la batería, sección 8.9). Cuando el proceso supera los 33 ms entre fotogramas, `CamaraReciente` empieza a descartar imágenes viejas en lugar de procesarlas con retraso.
+- **Latencia hasta la pantalla:** la de extremo a extremo hasta el dibujo en pantalla la calcula el navegador (`Date.now() - captura_ms`) y aparece junto a los FPS en la cabecera de la cámara; pasa el cursor sobre ella para ver el desglose. Todavía no se ha medido en el navegador.
 
 ---
 
@@ -493,13 +535,27 @@ La latencia de extremo a extremo desde la cámara hasta la pantalla no se ha med
 |---|---|
 | `index.html` | Estructura semántica: encabezado, tarjeta de cámara con subtítulos, panel lateral con pestañas *Traducir* / *Práctica*, tarjetas de manos y rostro, guía lateral del alfabeto |
 | `estilos.css` | Variables de diseño por tema, maquetación con CSS Grid y *container queries*, animaciones y diseño adaptable |
-| `app.js` | Conexión y reconexión del WebSocket, video, actualización del DOM, tema, teclado y Modo Práctica |
+| `app.js` | Conexión y reconexión del WebSocket, video MJPEG, dibujo del esqueleto, medición de latencia, actualización del DOM, tema, teclado y Modo Práctica |
 
-#### 2.6.1 Video
+#### 2.6.1 Video y esqueleto
 
-Cada mensaje binario se decodifica con `createImageBitmap` y se pinta en un `<canvas>`. Mientras se decodifica un fotograma, solo se guarda **el último que llega**; los intermedios se descartan. Es la misma política de "último valor" del servidor, así que el navegador tampoco acumula retraso. La proporción del lienzo se toma del primer fotograma (`--ar`) y se ajusta al espacio disponible con unidades `cqw`/`cqh`, sin deformar la imagen ni recortarla.
+El área de la cámara apila tres capas:
 
-Las etiquetas de cada mano (`Izq · D`, `Der · B`, con su mini barra) son **elementos HTML** colocados sobre el video con la `caja` normalizada que manda el servidor. El frame solo lleva el esqueleto translúcido y las articulaciones en el color de cada mano (azul la izquierda, verde la derecha).
+| Capa | Elemento | Detalle |
+|---|---|---|
+| 1 | `<img>` | Flujo MJPEG de `/video_feed`, **espejado con CSS** (`transform: scaleX(-1)`) para coincidir con la imagen que procesa el motor; `object-fit: cover` |
+| 2 | `<canvas>` | Esqueleto dibujado con los `puntos` del estado. **No se espeja**, porque las coordenadas ya vienen de la imagen espejada |
+| 3 | HTML | Etiquetas de cada mano (`Izq · D`, `Der · B`, con su mini barra) colocadas con la `caja` normalizada, sello de acierto, diagnóstico y avisos |
+
+- **Alineación:** el video y las coordenadas salen de la misma cámara y del mismo tamaño de imagen, así que el esqueleto coincide sin ajustes. La proporción del área se toma del `tamano` del motor (`--ar`) y se ajusta al espacio disponible con unidades `cqw`/`cqh`.
+- **Dibujo:** un bucle `requestAnimationFrame` redibuja solo cuando llega un estado nuevo (o cambia el tamaño o el tema). El lienzo usa la densidad real de la pantalla (`devicePixelRatio`), así que las líneas se ven nítidas.
+- **Estilo del esqueleto:**
+  - huesos en blanco translúcido con un halo (`shadowBlur`) del color de la mano: azul eléctrico la izquierda, verde esmeralda la derecha, tomados de `--izq` / `--der`;
+  - articulaciones del mismo color, con las yemas más grandes y rodeadas por un aro;
+  - el tamaño de cada punto crece cuando el punto está más cerca de la cámara (`z`);
+  - al registrarse una seña, la mano se pinta en el verde de éxito;
+  - la estela de un trazo se dibuja fina y tenue al inicio e intensa al final.
+- **Latencia:** al dibujar cada estado nuevo se calcula `Date.now() - tiempos.captura_ms` (media móvil) y se muestra junto a los FPS, actualizada 4 veces por segundo.
 
 #### 2.6.2 Actualización eficiente del DOM
 
@@ -802,7 +858,7 @@ Las **sesiones guiadas** que se usaron para calibrar (sección 8.1) ya son una h
 | Sistema operativo | Windows 10/11 |
 | Python | **3.12** (MediaPipe 0.10.18 **no** es compatible con 3.13) |
 | Hardware | Cámara web integrada o USB |
-| Navegador | Chrome, Edge o Firefox recientes (usa *container queries*, `color-mix()` y `createImageBitmap`) |
+| Navegador | Chrome, Edge o Firefox recientes (usa *container queries* y `color-mix()`). No pide permiso de cámara: el video lo transmite el servidor |
 | Puerto | `5000` libre en `127.0.0.1` |
 | Voz | Una voz SAPI5 en español (en Windows: *Microsoft Sabina* o *Helena*). Si falta, el programa funciona sin voz |
 | Editor | VS Code con la extensión **Python** (opcional) |
@@ -812,7 +868,7 @@ Las **sesiones guiadas** que se usaron para calibrar (sección 8.1) ya son una h
 | Librería | Capa | Uso |
 |---|---|---|
 | `mediapipe==0.10.18` | Motor | Detección de las manos (Hands, con coordenadas de mundo y lateralidad) y del rostro (Face Mesh) |
-| `opencv-python` | Motor | Captura de video, dibujo del esqueleto, codificación JPEG y **`solvePnP`** |
+| `opencv-python` | Motor | Captura de video (hilo `CamaraReciente`), espejo, conversión de color y **`solvePnP`** |
 | `numpy` | Motor | Geometría 3D, filtro One-Euro y trayectorias |
 | `pyttsx3` | Motor | Voz (en Windows instala también `comtypes` y `pywin32`) |
 | `fastapi` | Servidor | Rutas HTTP, archivos estáticos y WebSocket |
@@ -865,7 +921,8 @@ py -3.12 -m venv venv
 
 | Síntoma | Causa probable | Solución |
 |---|---|---|
-| La interfaz dice *No se pudo acceder a la cámara* | Otra aplicación (Teams, Zoom, otra instancia) tiene la cámara | Cerrarla y volver a ejecutar |
+| La interfaz dice *El motor no pudo abrir la cámara* | Otra aplicación (Teams, Zoom, otra instancia) tiene la cámara | Cerrarla y volver a ejecutar |
+| Etiqueta *solo esqueleto* sobre un fondo oscuro | No llega el video de `/video_feed` (la cámara no abrió o el servidor se reinició) | Recargar la página; si persiste, revisar la terminal |
 | `error while attempting to bind on address ('127.0.0.1', 5000)` | Otra instancia del servidor sigue abierta | Cerrarla, o cambiar `PUERTO` en `server.py` |
 | *Reconectando* en el indicador | El servidor se detuvo o se reinició | El navegador reintenta cada segundo; volver a ejecutar `server.py` |
 | La tipografía se ve distinta | Sin conexión a Google Fonts | No afecta el funcionamiento; se usa la fuente del sistema |
@@ -1044,10 +1101,10 @@ Al reflejar la mano izquierda, **las mismas reglas** clasifican ambas manos sin 
 | MediaPipe (2 manos + rostro), laptop **conectada** (sesiones 1-4) | ≈ 25 ms por fotograma → **25-26 FPS** de captura |
 | MediaPipe solo, laptop **en batería** (40 %) | manos 37 ms con `max_num_hands=1` y **76 ms con 2** (con una mano a la vista busca la segunda en cada frame); rostro 7-11 ms |
 | Motor completo en vivo, en batería (versión con ventanas de OpenCV) | **17 FPS** (60 ms de mediana por fotograma), 400 fotogramas, teclas simuladas, cierre limpio |
-| Arquitectura web en vivo, laptop conectada | **30.1 FPS** recibidos por un cliente WebSocket, 11.3 KB por fotograma, cierre en 0.5 s (sección 2.5.6) |
+| Arquitectura web en vivo, laptop conectada, sin manos a la vista | **30.2 estados/s**, 0.54 KB por estado, captura → cliente 15.3 ms de mediana, proceso 14.9 ms (sección 2.5.6) |
 | Voz | no bloquea el bucle (`decir()` regresa al instante; hilo propio) |
 
-En la arquitectura web, el motor ya no dibuja paneles: solo el esqueleto de las manos y la codificación JPEG. Toda la presentación la hace el navegador. El costo principal es MediaPipe, no el código del proyecto. En una PC lenta, `PROCESAR_ROSTRO_CADA = 2` o `MAX_MANOS = 1` recuperan FPS. Los trazos se miden en segundos y el hold-to-type con `time.monotonic()`, así que el reconocimiento no cambia con los FPS.
+En la arquitectura web el motor no dibuja ni codifica imágenes: solo procesa y manda coordenadas. Toda la presentación la hace el navegador. El costo principal es MediaPipe, no el código del proyecto. En una PC lenta, `PROCESAR_ROSTRO_CADA = 2` o `MAX_MANOS = 1` recuperan FPS. Los trazos se miden en segundos y el hold-to-type con `time.monotonic()`, así que el reconocimiento no cambia con los FPS.
 
 ### 8.10 Pruebas automáticas
 
@@ -1055,7 +1112,8 @@ En la arquitectura web, el motor ya no dibuja paneles: solo el esqueleto de las 
 |---|---|
 | **28 pruebas de lógica**: hold-to-type por mano, misma letra con ambas manos, bloqueo tras un trazo, seguidor de manos (duplicados, parpadeo, corrección, orden), espejo canónico, One-Euro (temblor y retraso), voz, guiones bajos, coherencia de vaivenes | **28 de 28** |
 | Reproducción completa de las 9 sesiones con el `Traductor` real | resultados de las secciones 8.2-8.8 |
-| Servidor web en vivo con la cámara real y un cliente WebSocket | 243 fotogramas y 243 estados recibidos; acciones aplicadas; JSON inválido ignorado; cierre limpio con `SALIR` |
+| Servidor web en vivo con la cámara real, un cliente WebSocket y un cliente de `/video_feed` a la vez | 243 estados en 8 s sin saltos; 227 JPEG válidos a 30.1 FPS; 0 fotogramas descartados; cierre limpio con `SALIR` en 0.51 s con el video abierto |
+| Coordenadas con dos manos sintéticas por `Traductor.paso` → `estado_web` | 21 puntos por mano en la posición esperada; estela de 20 puntos con la mano en movimiento; 1.57 KB por estado |
 | Revisión estática | `pyflakes` sin avisos en todos los módulos y `node --check` sin errores en `app.js` |
 
 > La interfaz web (tema, Modo Práctica, animaciones) se revisa manualmente en el navegador; todavía no tiene pruebas automáticas de interfaz.
@@ -1078,6 +1136,8 @@ En la arquitectura web, el motor ya no dibuja paneles: solo el esqueleto de las 
 | **CH, LL y RR** | No incluidas | Roadmap |
 | **Voz del sistema** | Requiere una voz SAPI5 en español | Si falta, el programa sigue sin voz |
 | **Una sesión por computadora** | La cámara y el texto son únicos: varias pestañas ven y controlan la misma sesión | Usar una sola pestaña |
+| **Esqueleto detrás del video** | El video sale sin esperar a MediaPipe; el esqueleto llega después del proceso (~15-60 ms) | Inherente a separar la vista del reconocimiento; se mide en la cabecera |
+| **Cámara fija** | Se usa la cámara de índice 0 de OpenCV | Cambiar el índice en `CamaraReciente(0)` (`server.py`) |
 | **Modo Práctica y texto** | Cada acierto también se escribe en los subtítulos | Limpiar (`C`) al terminar de practicar |
 | **Estadísticas de práctica** | Solo se guarda la mejor racha, en el navegador; los aciertos se pierden al recargar | Persistencia en base de datos (roadmap) |
 | **Imágenes de referencia** | La tarjeta de práctica muestra un espacio reservado, sin foto de la seña | Agregar las imágenes de la lámina SEP |
@@ -1113,8 +1173,11 @@ En la arquitectura web, el motor ya no dibuja paneles: solo el esqueleto de las 
 | Decisión | Motivo |
 |---|---|
 | **El navegador no reconoce nada** | El reconocimiento sigue siendo el `Traductor.paso()` validado con las 9 sesiones; la interfaz no puede alterar los resultados |
-| **Último valor en lugar de cola** (`Difusor`) | Con una cola, un cliente lento acumularía segundos de retraso; con el último paquete, el retraso máximo es un fotograma |
-| **JPEG binario en lugar de base64** | 33 % menos bytes y decodificación directa con `createImageBitmap` |
+| **Último valor en lugar de cola** (cámara, `Difusor` y dibujo) | Con una cola, un cliente lento o un proceso lento acumularía segundos de retraso; con el último valor, el retraso máximo es un fotograma |
+| **Python dueño de la cámara; video MJPEG aparte del estado** | `getUserMedia` falló con `NotReadableError` en la laptop de pruebas (Windows no compartió la cámara). Subir fotogramas desde el navegador detendría el reconocimiento con la pestaña en segundo plano. MJPEG: 30 FPS, 1 ms de compresión, sin esperar a MediaPipe |
+| **Estado por WebSocket sin imagen** | 0.54-1.57 KB por estado frente a ~11 KB del JPEG anterior; el esqueleto se dibuja en el navegador con los colores del tema |
+| **Hora de captura en reloj de pared** | El navegador y Python están en la misma computadora: `Date.now() - captura_ms` mide la latencia real sin sincronizar relojes |
+| **`perf_counter` para medir el proceso** | En Windows, `time.monotonic()` tiene ~16 ms de resolución: el proceso salía siempre 16.0 ms |
 | **Un solo hilo escribe el texto** | Las acciones del navegador pasan por una cola; no hace falta sincronizar `Escritor` |
 | **Etiquetas de las manos en HTML, no dibujadas en el frame** | Tipografía con acentos y Ñ reales, temas y animaciones, sin costo de dibujo en Python |
 | **`127.0.0.1` y sin persistencia de video** | La cámara es un dato sensible; nada sale de la computadora |
@@ -1134,16 +1197,17 @@ Proyecto/
 ├── venv/                 # Entorno virtual (ignorado por Git)
 ├── .gitignore
 ├── server.py             # Servidor web: FastAPI, WebSocket /ws, Difusor, apertura del navegador
-├── main.py               # Motor: bucle de captura en su propio hilo
+├── main.py               # Motor: bucle de proceso en su propio hilo
+├── camara.py             # Captura en un hilo propio: siempre el fotograma más reciente
 ├── classifier_hands.py   # Manos: dos manos, One-Euro, rasgos 3D, alfabeto y trazos
 ├── classifier_face.py    # Rostro: solvePnP, cejas, negar y asentir
 ├── traductor.py          # Hold-to-type por mano y orquestación de un frame
 ├── voice_engine.py       # Voz asíncrona y puente al hardware
-├── ui_panel.py           # Presentación: esqueleto de las manos y estado JSON
+├── ui_panel.py           # Presentación: estado JSON con las coordenadas de las manos
 ├── static/
 │   ├── index.html        # Estructura de la interfaz
 │   ├── estilos.css       # Temas, maquetación y animaciones
-│   └── app.js            # Cliente WebSocket, tema y Modo Práctica
+│   └── app.js            # Cliente WebSocket, cámara local, esqueleto, tema y Modo Práctica
 ├── CLAUDE.md             # Mapa compacto del proyecto para el asistente de código
 ├── README.md             # Resumen e inicio rápido
 └── DOCUMENTACION.md      # Este documento
@@ -1151,7 +1215,7 @@ Proyecto/
 
 ### 11.2 Módulos
 
-Dependencias: `voice_engine` ← `classifier_hands` ← `classifier_face` ← `traductor` ← `ui_panel` ← `main` ← `server`. Cada módulo de reconocimiento empieza con sus umbrales, cada uno con el rango medido que lo justifica.
+Dependencias: `voice_engine` ← `classifier_hands` ← `classifier_face` ← `traductor` ← `ui_panel` ← `main` (+ `camara`) ← `server`. Cada módulo de reconocimiento empieza con sus umbrales, cada uno con el rango medido que lo justifica.
 
 | Módulo | Elementos |
 |---|---|
@@ -1159,10 +1223,11 @@ Dependencias: `voice_engine` ← `classifier_hands` ← `classifier_face` ← `t
 | **`classifier_face.py`** | `EstimadorPoseCabeza` (`solvePnP`), `PoseCabeza`, `altura_cejas`, `cejas_esperadas`, `calcular_rasgos_faciales`, `DetectorOscilacion`, `AnalizadorFacial`, `detectar_rostro` |
 | **`traductor.py`** | `SostenerMano`, `Escritor`, `Traductor` |
 | **`voice_engine.py`** | `limpiar_texto`, `nombre_hablado`, `ultima_palabra`, `avisar_una_vez`, `VozAsincrona`, `PoliticaVoz`, `_elegir_voz`, `enviar_a_hardware` |
-| **`ui_panel.py`** | `GUIA`, `PISTA_TRAZO`, `COLOR_LADO`, `VistaMano`, `vista_mano`, `mano_principal`, `dibujar_manos`, `dibujar_estela`, `config_web`, `estado_web`, `lineas_diagnostico` |
-| **`main.py`** | `capturar(publicar, comandos, detener)`: captura, acciones de la cola, voz, hardware, JPEG y estado |
-| **`server.py`** | `Difusor`, `ciclo_de_vida` (lifespan), `inicio` (`/`), `transmitir` (`/ws`), `_recibir`, `main` |
-| **`static/app.js`** | `conectar`, `pintarFrame`, `configurar`, `mostrarEstado`, `fase`, `aplicarTema`, `cambiarVista`, `evaluarPractica`, `acierto`, `fallo`, `celebrar`, `lanzarConfeti` |
+| **`ui_panel.py`** | `GUIA`, `PISTA_TRAZO`, `CONEXIONES_MANO`, `VistaMano`, `vista_mano`, `mano_principal`, `config_web`, `estado_web` (con `puntos`, `estela` y `tiempos`), `lineas_diagnostico` |
+| **`main.py`** | `capturar(cam, publicar, comandos, detener)`: fotograma más reciente, acciones de la cola, voz, hardware, tiempos y estado |
+| **`camara.py`** | `CamaraReciente` (`leer` con `consumir`, `cerrar`, `descartados`), `a_jpeg`, `VIDEO_CALIDAD`, `VIDEO_ANCHO_MAX` |
+| **`server.py`** | `Difusor`, `ciclo_de_vida` (lifespan: abre la cámara y lanza el proceso), `inicio` (`/`), `video_feed` y `_fotogramas_mjpeg` (`/video_feed`), `transmitir` (`/ws`), `_recibir`, `_cerrando`, `main` |
+| **`static/app.js`** | `conectar`, `iniciarVideo`, `revisarVideo`, `soloEsqueleto`, `detenerVideo`, `dibujarEsqueleto`, `cuadro` (bucle de dibujo y latencia), `configurar`, `mostrarEstado`, `fase`, `aplicarTema`, `cambiarVista`, `evaluarPractica`, `acierto`, `fallo`, `celebrar`, `lanzarConfeti` |
 
 La división en módulos movió el código sin cambiarlo: 235 de las 236 definiciones son idénticas en su árbol de sintaxis (la otra solo cambia cómo se escribe la misma constante), y con 6 000 fotogramas sintéticos de dos manos y rostro la versión dividida produjo exactamente las mismas salidas que el `main.py` anterior. La migración a la web después reemplazó las ventanas de OpenCV de `ui_panel.py` por la interfaz de `static/`; el reconocimiento (`classifier_*`, `traductor`) no cambió.
 

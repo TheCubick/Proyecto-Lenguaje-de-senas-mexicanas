@@ -56,7 +56,7 @@
       <div class="tarjeta-cabeza">
         <div class="cabeza-izq">
           <span class="en-vivo" id="conexion" data-conexion="conectando"><i></i><span id="conexion-texto">Conectando</span></span>
-          <span class="fps"><b id="fps">--</b> FPS</span>
+          <span class="fps" id="rendimiento" title="FPS del motor · latencia desde la captura hasta el dibujo"><b id="fps">--</b> FPS · <b id="latencia">--</b> ms</span>
         </div>
         <div class="herramientas">
           <button type="button" data-accion="ESPACIO" title="Espacio (barra espaciadora)">
@@ -80,7 +80,14 @@
 
       <div class="lienzo-marco">
         <div class="lienzo" id="lienzo">
-          <canvas id="camara" width="640" height="480"></canvas>
+          <img class="video-camara" id="video" alt="Vista de la cámara" decoding="async">
+          <!-- src lo pone app.js: /video_feed (MJPEG del motor) -->
+
+          <canvas id="esqueleto" aria-hidden="true"></canvas>
+          <span class="modo-esqueleto" id="modo-esqueleto" hidden>
+            <svg viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/><path d="m1 1 22 22"/></svg>
+            <span id="modo-esqueleto-texto">Solo esqueleto</span>
+          </span>
           <div class="chip-mano" id="chip-Izq" data-lado="Izq" hidden><i></i><span class="chip-lado">Izq</span><b class="chip-letra"></b><span class="chip-barra"><span></span></span></div>
           <div class="chip-mano" id="chip-Der" data-lado="Der" hidden><i></i><span class="chip-lado">Der</span><b class="chip-letra"></b><span class="chip-barra"><span></span></span></div>
           <div class="sello" id="sello" aria-hidden="true">
