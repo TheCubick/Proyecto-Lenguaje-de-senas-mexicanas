@@ -1,364 +1,109 @@
-# Proyecto Lenguaje de señas mexicanas
+# Traductor de Lengua de Señas Mexicana (LSM)
 
-## Sistema Inteligente de Traducción de Lengua de Señas Mexicana (LSM): dos manos, rostro y voz
+<p align="center">
+  <img src="https://cdn.simpleicons.org/python" alt="Python" title="Python" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/mediapipe" alt="MediaPipe" title="MediaPipe" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/opencv" alt="OpenCV" title="OpenCV" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/numpy" alt="NumPy" title="NumPy" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/fastapi" alt="FastAPI" title="FastAPI" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/javascript" alt="JavaScript" title="JavaScript" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/html5" alt="HTML5" title="HTML5" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/css" alt="CSS" title="CSS" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/pwa" alt="PWA" title="PWA" width="44" height="44">
+  <img src="https://cdn.simpleicons.org/nodedotjs" alt="Node.js" title="Node.js" width="44" height="44">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.simpleicons.org/vercel/white"><img src="https://cdn.simpleicons.org/vercel" alt="Vercel" title="Vercel" width="44" height="44"></picture>
+  <img src="https://cdn.simpleicons.org/git" alt="Git" title="Git" width="44" height="44">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.simpleicons.org/github/white"><img src="https://cdn.simpleicons.org/github" alt="GitHub" title="GitHub" width="44" height="44"></picture>
+</p>
 
-Proyecto de la materia Inteligencia Artificial. Reconoce en tiempo real, con una cámara web, el **alfabeto de la Lengua de Señas Mexicana** hecho con **cualquiera de las dos manos o con ambas a la vez**. Lo convierte en texto, lo **dice en voz alta** y lo muestra en una **interfaz web** con tema claro y oscuro y un **Modo Práctica** para aprender las señas.
+<p align="center">
+  <img src="docs/img/gatito.gif" alt="Gatito bailando" width="160">
+</p>
 
-| Capa | Tecnología |
+Proyecto de la materia Inteligencia Artificial. Con una cámara web reconoce en tiempo real el **alfabeto de la LSM** (con cualquiera de las dos manos o con ambas), **frases con movimiento** y **gestos del rostro**. Lo convierte en texto, lo **dice en voz alta** y lo muestra en una **app web** instalable (PWA) con tema claro y oscuro y un **Modo Práctica** para aprender las señas.
+
+Funciona de dos maneras con la misma interfaz:
+- **Local:** un servidor en Python hace el reconocimiento y transmite el video.
+- **En el navegador (Vercel):** el motor está portado a JavaScript y corre en el dispositivo de quien lo abre. El video no sale de ahí.
+
+## Qué hace
+
+| Función | Descripción |
 |---|---|
-| Visión e inferencia | MediaPipe Hands y Face Mesh, OpenCV (`solvePnP`), NumPy |
-| Voz | `pyttsx3` (SAPI5 de Windows) en un hilo propio |
-| Servidor | FastAPI + uvicorn, WebSocket local |
-| Interfaz | HTML, CSS y JavaScript sin dependencias |
+| Alfabeto | Letras estáticas (se sostienen 1.5 s) y letras con movimiento (J, K, Ñ, Q, X, Z) con la lámina oficial de la SEP como referencia |
+| Dos manos | Cada mano tiene su propio filtro, trayectoria y progreso; la izquierda se refleja para usar las mismas reglas |
+| Frases | Reconoce palabras y frases con movimiento (*gracias*, *mi nombre es*, *sordo*…) comparando contra muestras sacadas de videos |
+| Rostro | Cejas levantadas agregan `?`, negar con la cabeza borra y asentir confirma la palabra |
+| Voz | Dice cada letra y lee la palabra o la frase completa |
+| Modo Práctica | Eliges una letra, palabra o frase, ves la demostración y recibes retroalimentación en vivo, con aciertos y rachas |
 
-## Características
+## Herramientas utilizadas
 
-- **Letras estáticas:** se escriben **sosteniendo la mano quieta 1.5 s**; cada mano tiene su propio progreso.
-- **Letras con movimiento (J, K, Ñ, Q, X, Z):** se registran al completar el trazo.
-- **Dos manos:** cada una tiene su propio filtro, trayectoria y progreso, y su etiqueta sobre el video (`Izq · B`, `Der · O`). La misma letra hecha con las dos se escribe una sola vez.
-- **Geometría 3D:** ángulos de las articulaciones, normal de la palma y un marco propio de cada mano. La mano izquierda se refleja para que las mismas reglas valgan para ambas.
-- **Rostro:** pose real de la cabeza en grados (`solvePnP`). Las cejas levantadas agregan `?`, negar con la cabeza borra y asentir confirma la palabra.
-- **Voz:** dice cada letra al registrarla y lee la palabra completa al confirmarla o tras 4 s sin escribir.
-- **Interfaz web:**
-  - anillo de progreso que cambia de color (azul → ámbar → verde);
-  - subtítulos centrados bajo el video;
-  - guía del alfabeto;
-  - tema claro/oscuro que se recuerda.
-- **Modo Práctica:** eliges una letra o una palabra, ves la tarjeta de referencia y recibes retroalimentación en vivo. Al acertar, la tarjeta gira, sale confeti y el borde de la cámara se ilumina; se lleva un marcador de aciertos y rachas.
+| Logo | Herramienta | Para qué se usa |
+|:---:|---|---|
+| <img src="https://cdn.simpleicons.org/python" alt="Python" title="Python" width="28" height="28"> | **Python 3.12** | Motor de reconocimiento y servidor local |
+| <img src="https://cdn.simpleicons.org/mediapipe" alt="MediaPipe" title="MediaPipe" width="28" height="28"> | **MediaPipe Hands y Face Mesh 0.10.18** | Detecta 21 puntos 3D por mano y 478 del rostro en cada fotograma |
+| <img src="https://cdn.simpleicons.org/opencv" alt="OpenCV" title="OpenCV" width="28" height="28"> | **OpenCV** | Captura de cámara, JPEG del video y `solvePnP` para la pose real de la cabeza en grados |
+| <img src="https://cdn.simpleicons.org/numpy" alt="NumPy" title="NumPy" width="28" height="28"> | **NumPy** | Geometría 3D, remuestreo de secuencias y DTW vectorizado |
+|  | **DTW (Dynamic Time Warping)** | Compara un movimiento completo contra las muestras del dataset para reconocer frases |
+| <img src="https://cdn.simpleicons.org/fastapi" alt="FastAPI" title="FastAPI" width="28" height="28"> | **FastAPI + uvicorn + WebSocket** | Servidor local: sirve la interfaz y manda el estado por fotograma como JSON; el video sale por MJPEG |
+|  | **SAPI de Windows (pywin32) / pyttsx3** | Voz en español en un hilo propio, sin congelar la cámara |
+| <img src="https://cdn.simpleicons.org/html5" alt="HTML5" title="HTML5" width="28" height="28"> <img src="https://cdn.simpleicons.org/css" alt="CSS" title="CSS" width="28" height="28"> <img src="https://cdn.simpleicons.org/javascript" alt="JavaScript" title="JavaScript" width="28" height="28"> | **HTML, CSS y JavaScript** | Interfaz sin dependencias: esqueleto de las manos en `<canvas>`, temas, Modo Práctica |
+| <img src="https://cdn.simpleicons.org/pwa" alt="PWA" title="PWA" width="28" height="28"> | **PWA (manifest + metas móviles)** | La interfaz se instala como app y se adapta a celular (App Shell de pantalla completa) |
+| <img src="https://cdn.simpleicons.org/mediapipe" alt="MediaPipe" title="MediaPipe" width="28" height="28"> <img src="https://cdn.simpleicons.org/webassembly" alt="WebAssembly" title="WebAssembly" width="28" height="28"> | **MediaPipe Tasks JS + `getUserMedia`** | El mismo reconocimiento dentro del navegador, sin Python |
+|  | **Web Speech API** | Voz en la versión del navegador |
+|  | **Levenberg-Marquardt propio** | `solvePnP` reescrito en JavaScript, porque en el navegador no hay OpenCV |
+| <img src="https://cdn.simpleicons.org/nodedotjs" alt="Node.js" title="Node.js" width="28" height="28"> | **Node.js** | Pruebas de paridad entre el motor de Python y el de JavaScript |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.simpleicons.org/vercel/white"><img src="https://cdn.simpleicons.org/vercel" alt="Vercel" title="Vercel" width="28" height="28"></picture> | **Vercel** | Publicación de la versión web (`vercel.json` y `.vercelignore`) |
+| <img src="https://cdn.simpleicons.org/git" alt="Git" title="Git" width="28" height="28"> <picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.simpleicons.org/github/white"><img src="https://cdn.simpleicons.org/github" alt="GitHub" title="GitHub" width="28" height="28"></picture> | **Git y GitHub** | Control de versiones y despliegue continuo |
+|  | **faster-whisper (opcional)** | Proponer cortes automáticos en los videos del dataset a partir de la voz del maestro |
 
-Para repetir la misma letra, cambia de seña o baja la mano y vuelve a hacerla.
+## Cómo funciona
 
-## Inicio rápido
+1. **Captura:** un hilo lee la cámara y guarda solo el último fotograma, así nunca se acumula retraso. La imagen se espeja antes de MediaPipe, por lo que la etiqueta Izquierda/Derecha es la mano real.
+2. **Detección:** MediaPipe da los puntos de las manos y del rostro. Un seguidor mantiene la identidad de cada mano entre fotogramas y un filtro One Euro suaviza el temblor.
+3. **Rasgos 3D:** de las manos salen ángulos de articulaciones, normal de la palma y un marco propio; del rostro, la pose de la cabeza y las cejas compensadas por esa pose.
+4. **Decisión:** reglas medidas sobre datos reales clasifican las letras estáticas. Los trazos (J, Z, `?`…) usan la trayectoria del dedo, y las frases se comparan por DTW contra el dataset al cerrar el gesto.
+5. **Salida:** el texto se escribe al sostener la seña, se dice en voz alta y la interfaz recibe un JSON por fotograma para dibujar el esqueleto, el anillo de progreso y los subtítulos.
 
-Requisitos: **Windows 10/11**, **Python 3.12** (MediaPipe 0.10.18 no es compatible con 3.13), una cámara web y un navegador reciente (Chrome, Edge o Firefox).
-
-```powershell
-# 1. Clonar el repositorio
-git clone https://github.com/TheCubick/Proyecto-Lenguaje-de-se-a.git
-cd Proyecto-Lenguaje-de-se-a
-
-# 2. Crear el entorno virtual
-py -3.12 -m venv venv
-
-# 3. Instalar dependencias
-.\venv\Scripts\python.exe -m pip install --upgrade pip
-.\venv\Scripts\python.exe -m pip install opencv-python mediapipe==0.10.18 numpy pyttsx3 fastapi uvicorn websockets
-
-# 4. Ejecutar
-.\venv\Scripts\python.exe python\server.py
-```
-
-Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el **navegador predeterminado se abre solo** en esa dirección; si no se abre, escríbela a mano. El navegador no pide permiso de cámara: el video lo transmite el propio programa. Para terminar, pulsa **Detener** dos veces en la interfaz o **Ctrl+C** en la terminal.
-
-**Con VS Code:** abre la carpeta y pulsa **F5** ("Traductor LSM (python/server.py)"). `.vscode/launch.json` ya usa el Python de `venv`.
-
-> La voz usa las voces SAPI5 de Windows (por ejemplo *Microsoft Sabina*, español de México). Si no hay ninguna en español, el programa funciona igual y el encabezado muestra **Sin voz**.
-
-## Versión web (Vercel): todo corre en el navegador
-
-La misma interfaz funciona sin Python: el reconocimiento se porta a JavaScript en `web/motor/` y corre en el navegador de quien la abre (MediaPipe Tasks 0.10.18 en WASM/GPU, la misma versión con la que se extrajo el dataset). El video de la cámara nunca sale del dispositivo.
-
-- `static/app.js` decide dónde está el motor: en `localhost` usa `server.py` por WebSocket; publicado (o con `?motor=navegador`) importa `web/motor/motor.js`, que se presenta como el mismo WebSocket (mismos mensajes `config` / `estado` / `pausa` / `error` y mismas acciones). La interfaz es una sola.
-- `web/motor/`: `manos.js`, `rostro.js` (con su propio solvePnP: en el navegador no hay OpenCV), `vector.js`, `gestos.js` (DTW), `traductor.js`, `presentacion.js`, `voz.js` (Web Speech API) y `motor.js` (cámara con `getUserMedia` + MediaPipe + el bucle de `main.py`). Es un port 1:1 de `python/`: mismos umbrales y mismo orden de decisión.
-- `web/datos/`: plantillas del DTW ya como descriptor (`plantillas.bin`, 4.1 MB) y la configuración. Se regeneran tras cambiar el dataset con `.\venv\Scripts\python.exe python\exportar_web.py`.
-- Verificado contra Python con fixtures de 3 976 fotogramas de los videos (alfabeto y 25 frases): mismas señas, mismo texto fotograma a fotograma, mismas 50 decisiones del DTW y mismos gestos del rostro (los ángulos del solvePnP difieren < 0.00001°).
-
-**Publicar en Vercel:** `vercel.json` sirve `static/index.html` en `/`, y `.vercelignore` sube solo `static/`, `web/` y `vercel.json` (sin Python, venv ni videos). Opciones:
-
-```powershell
-# A) Desde la terminal (pide iniciar sesión la primera vez)
-npx vercel           # vista previa
-npx vercel --prod    # producción
-
-# B) Desde GitHub: importar el repositorio en vercel.com > Add New > Project,
-#    Framework Preset "Other", sin Build Command ni Output Directory. Cada push publica solo.
-```
-
-**Probarlo en tu PC sin Python corriendo** (la cámara solo puede tenerla uno de los dos):
-
-```powershell
-.\venv\Scripts\python.exe -m http.server 8000
-# abrir http://localhost:8000/static/index.html?motor=navegador
-```
-
-Diferencias con la versión local: el navegador pide permiso de cámara; la primera carga descarga ~25 MB (MediaPipe y modelos, luego quedan en caché); no hay videos de demostración en Práctica (los videos de terceros no se publican); las muestras propias de frases (botón Guardar / G) se guardan en el almacenamiento del navegador, no en `datos/dataset/`; la voz usa las voces del sistema que exponga el navegador y suena después de la primera interacción con la página.
-
-## Arquitectura
-
-```
- Cámara ─▶ HILO DE CÁMARA (camara.py): solo el fotograma más reciente
-               │                                     SERVIDOR (server.py)              NAVEGADOR (static/)
-               │                                     FastAPI · 127.0.0.1:5000
-               ├──────── sin esperar a MediaPipe ──▶ /video_feed: MJPEG (~16 KB) ───▶  <img> en espejo
-               ▼
-           HILO DE PROCESO (main.py)
-           MediaPipe manos + rostro
-           Traductor.paso() → texto, voz
-           estado + coordenadas → JSON ────────────▶ /ws: JSON (~0.5-1.6 KB) ──────▶  <canvas>: esqueleto encima
-                                       ◀── cola ───  {"accion": ...}         ◀──────  anillo, manos, rostro,
-                                                                                      subtítulos, Práctica
-```
-
-- **Python es el único dueño de la cámara:** en Windows el navegador no siempre puede abrir una cámara que ya usa otro programa, así que el video lo transmite el mismo servidor.
-- **Video sin esperar al reconocimiento:** cada fotograma nuevo se comprime en ~1 ms y sale por `/video_feed` al instante. El estado y las coordenadas 3D de las manos llegan aparte por WebSocket, y el esqueleto se dibuja en un `<canvas>` sobre el video con los colores del tema. Como ambos salen de la misma cámara, el esqueleto siempre coincide con la imagen.
-- **Siempre lo más reciente:** un hilo lee la cámara y el proceso toma solo el último fotograma. El servidor y el dibujo también usan siempre el último estado, así que nunca se acumula retraso.
-- **El backend hace todo el reconocimiento.** El navegador presenta el estado y manda acciones (Espacio, Borrar, Limpiar, Diagnóstico, Recalibrar, Detener).
-- **Latencia a la vista:** junto a los FPS aparece la latencia desde la captura hasta el dibujo; al pasar el cursor se ve el desglose.
-- **Privado:** el servidor solo escucha en `127.0.0.1` y no se guarda ningún fotograma.
-- **Desempeño medido sin manos a la vista:**
-  - video a 30 FPS (~16 KB por fotograma);
-  - estado a 30 por segundo, 0.5 KB cada uno (1.6 KB con dos manos);
-  - 16 ms desde la captura hasta que el estado llega al cliente.
-
-El protocolo, el modelo de hilos y las decisiones de diseño están en la [documentación técnica](docs/DOCUMENTACION.md#25-arquitectura-cliente-servidor).
-
-## Interfaz
-
-| Zona | Contenido |
-|---|---|
-| **Encabezado** | Estado de la voz, interruptor de tema (sol/luna), guía del alfabeto, botón Detener |
-| **Cámara** | Video del motor en espejo con el esqueleto de cada mano dibujado encima (azul la izquierda, verde la derecha, verde de éxito al registrar), etiqueta flotante por mano, estela del dedo al trazar, FPS y latencia, y barra de herramientas |
-| **Subtítulos** | Texto acumulado centrado bajo el video; la última letra entra con una animación breve |
-| **Traducir** | La seña en grande dentro del anillo de progreso, qué mano la hace y cómo se hace |
-| **Práctica** | Selector de letras o palabras, tarjeta de referencia, retroalimentación en vivo y marcador |
-| **Manos y rostro** | Tarjeta por mano; estado facial con icono, medidor de cejas y ángulos de la cabeza |
-
-El anillo de progreso cambia de color según cuánto falta para registrar la seña:
-
-| Progreso | Color |
-|---|---|
-| 0-49 % | Azul claro |
-| 50-99 % | Ámbar ("procesando") |
-| 100 % | Verde, con pulso y brillo |
-
-## Modo Práctica
-
-1. Abre la pestaña **Práctica** del panel derecho. También puedes tocar una letra en la guía (`G`).
-2. Elige **Letras**: cualquiera de las 30 señas, con flechas o al azar. O **Deletreo**: una palabra sugerida o la que escribas, letra por letra. O **Frases**: una palabra o frase con movimiento del dataset (*gracias*, *mi nombre es*, *sordo*…).
-3. Haz la seña frente a la cámara. La retroalimentación te dice si es la correcta, si ya tienes la base de una seña con movimiento (*"Bien, I es la base: ahora haz el movimiento"*) o qué seña está detectando.
-4. Al registrarse la seña correcta, la tarjeta gira, sale confeti y suben los aciertos y la racha. Si registras otra letra, la racha vuelve a cero.
-
-**Frases (tarjeta "Dinámica").** Empieza con las manos abajo, haz el movimiento completo y continuo, y bájalas: al bajarlas, `gestos.py` compara el movimiento (remuestreado a 30 fotogramas, como el dataset) contra las ejecuciones extraídas de los videos y te dice si coincide o a qué frase se pareció. Es un comparador por plantillas (DTW) mientras se entrena la LSTM; la lista de frases sale de las carpetas de `dataset/`.
-
-**Demostraciones.** La tarjeta de referencia muestra el fragmento del video original donde se hace la seña (letras: video *Alfabeto*, tramos en `datos/demostraciones.json`; frases: el corte de `dataset_config.json`), en bucle y con botón **0.5×** para verla lento. Las frases y las palabras de deletreo se agrupan de la más fácil a la más difícil (Básico, Intermedio, Avanzado). En **Letras**, el botón aleatorio deja activo un modo que, al acertar, pasa solo a otra letra que aún no hayas dominado.
-
-**Leer el texto.** El botón **Leer** (tecla **L**), junto a Espacio, Borrar y Limpiar, dice en voz alta todo lo escrito; suena aunque la voz automática esté silenciada.
-
-**Controles del encabezado.** **Voz** activa o silencia la voz (al activarla dice «Voz activada»). **Pausar / Iniciar** apaga y vuelve a encender la cámara sin cerrar el programa (el texto se conserva). **Apagar** cierra todo. En Traducir, **Velocidad para escribir** elige cuánto sostener una seña: Lenta 1.5 s, Normal 1 s, Rápida 0.7 s. Las preferencias se recuerdan en el navegador.
-
-**Muestras propias.** Después de hacer la frase (cuando el cuadro de diagnóstico muestre la evaluación), pulsa **Guardar como muestra** o la tecla **G**: tu movimiento se guarda como `datos/dataset/<frase>/pablo_seq_XX.npy` y se usa como referencia desde ese momento. Con 3-4 repeticiones propias por frase el comparador reconoce tus manos y tu ritmo. En Práctica > Frases la tecla G guarda; en los demás modos abre la guía.
-
-> Lo que aciertas en práctica también se escribe en los subtítulos; usa **Limpiar** al terminar.
-
-## Teclado
-
-| Tecla | Acción |
-|---|---|
-| `Espacio` | Agregar espacio |
-| `Backspace` | Borrar la última letra |
-| `C` | Limpiar todo el texto |
-| `D` | Mostrar u ocultar el diagnóstico (estado 3D de cada dedo y ángulos de la cabeza) |
-| `N` (o `R`) | Recalibrar la cara neutra |
-| `G` | Abrir o cerrar la guía del alfabeto (`Esc` la cierra) |
-| `T` | Cambiar entre tema claro y oscuro |
-
-Los atajos funcionan con la pestaña del navegador activa; no se activan mientras escribes una palabra de práctica.
-
-## Alfabeto (según la lámina oficial de la SEP)
-
-| Seña | Cómo hacerla |
-|---|---|
-| **A** | Puño con el pulgar estirado al lado |
-| **B** | 4 dedos juntos arriba, pulgar sobre la palma |
-| **C** | Mano curva en forma de C |
-| **D** | Índice arriba, los demás dedos cerrados |
-| **E** | Dedos doblados sobre el pulgar |
-| **F** | Índice tocando el pulgar y los otros 3 dedos arriba |
-| **G** | "Pistola": índice apuntando de lado, pulgar arriba |
-| **H** | "Pistola" con índice y medio de lado |
-| **I** | Solo el meñique arriba |
-| **J** | La I, y el meñique baja haciendo un gancho (*con movimiento*) |
-| **K** | Índice y medio juntos o cruzados, agitando la mano de lado a lado (*con movimiento*) |
-| **L** | Índice arriba y pulgar al lado |
-| **M** | 3 dedos hacia abajo |
-| **N** | 2 dedos hacia abajo |
-| **Ñ** | La N agitada de lado a lado (*con movimiento*) |
-| **O** | Círculo con el índice y el pulgar |
-| **P** | Índice y medio cruzados en "X" |
-| **Q** | Pinza o puño colgando hacia abajo, balanceándolo (*con movimiento*) |
-| **R** | Índice y medio entrelazados |
-| **S** | Puño con el pulgar sobre los dedos |
-| **T** | Puño con el pulgar entre los dedos |
-| **U** | Índice y medio juntos arriba |
-| **V** | Índice y medio en V |
-| **W** | Índice, medio y anular abiertos |
-| **X** | Índice de lado con la palma inclinada, moviéndolo (*con movimiento*) |
-| **Y** | Pulgar y meñique estirados |
-| **Z** | La D dibujando una Z en el aire (*con movimiento*) |
-| **ESPACIO** | Mano abierta con los 5 dedos separados y el pulgar bien abierto |
-| **BORRAR** | Mano abierta que **barre rápido hacia el centro del cuerpo** (a la izquierda con la mano derecha, a la derecha con la izquierda) |
-| **?** | Índice dibujando un signo de interrogación en el aire (respaldo de las cejas) |
-
-> **Con la mano izquierda los movimientos van en espejo** (el gancho de la J, el barrido de BORRAR). La J, la Z y el `?` también se aceptan dibujados como letra escrita.
->
-> **Los trazos deben ser pequeños, del tamaño de la mano**, y sin salirse del cuadro de la cámara.
->
-> **CH, LL y RR** no están incluidas.
-
-## Dos manos
-
-- Ten las manos **a la altura del pecho, separadas y sin taparte la cara**: con las manos juntas delante de la cara la cámara puede dejar de verlas.
-- Cada mano escribe por su cuenta. Si las dos completan letras distintas se escriben ambas; **la misma letra con las dos manos se escribe una vez**.
-- Una mano relajada a la vista no escribe.
-
-## Gestos del rostro (MediaPipe Face Mesh + `cv2.solvePnP`)
-
-Al iniciar, mantén la cara neutra un momento mientras el sistema calibra (la tarjeta *Rostro* muestra **Calibrando**); la tecla **`N`** vuelve a calibrar. La tarjeta incluye un **medidor de cejas** con la marca del umbral y los **ángulos de la cabeza** (cabeceo, giro e inclinación, en grados).
-
-| Gesto | Efecto |
-|---|---|
-| **Cejas levantadas 1.5 s** | Agrega `?` al final de la palabra |
-| **Negar con la cabeza** (izquierda-derecha-izquierda, ≥ 8°) | Borra la última letra |
-| **Asentir con la cabeza** (tres cabeceos, ≥ 5°) | Confirma la palabra (agrega un espacio) y la lee en voz alta |
-
-Si una mano tapa la cara, la tarjeta muestra **Cara tapada** y no se interpreta ningún gesto facial.
-
-## Voz
-
-Un hilo aparte (`pyttsx3`, con una voz en español) habla **sin congelar la cámara**. Dice el nombre de cada letra (`jota`, `eñe`, `doble ve`…) y lee la palabra completa al asentir o tras 4 s sin escribir.
+El dataset de frases sale de videos de YouTube: `video_extractor.py` corta cada seña, extrae solo vectores de landmarks (ningún píxel) y la remuestrea a 30 fotogramas. Detalles en [docs/DATASET.md](docs/DATASET.md).
 
 ## Qué tan bien funciona
 
-Se calibró y se probó con **nueve sesiones guiadas** grabadas con la cámara real (solo coordenadas de manos y rostro, sin imágenes), de **una sola persona** y con ambas manos. Las sesiones de **prueba** se midieron primero con el código congelado, antes de verlas (**independiente**); después se ajustaron algunas reglas con esos datos (**versión final**, ya no independiente).
+Calibrado y probado con **nueve sesiones guiadas** grabadas con la cámara real, de **una sola persona**. Las sesiones de prueba se midieron primero con el código congelado (**independiente**); después se ajustaron algunas reglas con esos datos (**versión final**).
 
 | Parte | Independiente | Versión final |
 |---|---|---|
-| Letras estáticas, mano derecha (exactitud por fotograma) | 94.4 % y 85.6 % (dos pruebas) | 96.0 % y 93.0 % |
+| Letras estáticas, mano derecha (por fotograma) | 94.4 % y 85.6 % | 96.0 % y 93.0 % |
 | Letras estáticas, mano izquierda | 79.8 % y 96.2 % | 91.6 % y 98.4 % |
 | Letras escritas de punta a punta | 35 de 44 y 41 de 44 | 40 de 44 y **43 de 44** |
-| Versión anterior (2D) en las mismas pruebas | 80.3 % y 79.6 % | — |
-| Dos manos con letras distintas a la vez | — | **15 de 15** escritas, cada una por su mano |
-| Trazos con movimiento (fases reconocidas) | 11 de 16 | 13 de 16 (calibración: 16 de 16) |
-| Rostro, eventos falsos en 19.4 min con cara visible | — | **11** (la versión anterior: 100), con los mismos aciertos |
-| Misma mano reflejada como la otra (espejo) | — | **100 %** igual (8 336 fotogramas) |
-| Velocidad del reconocimiento | — | 25-26 FPS conectada; 17 FPS en batería con dos manos |
-| Transmisión a la interfaz web (sin manos a la vista) | — | Video 30 FPS (~16 KB); estado 30/s, 0.5 KB (1.6 KB con dos manos), 16 ms captura → cliente |
+| Dos manos con letras distintas a la vez | — | **15 de 15** |
+| Rostro, eventos falsos en 19.4 min | — | **11** (versión anterior: 100) |
+| Frases del dataset en repetición de video | — | 46 aceptadas, 0 falsas |
+| Motor de JavaScript contra Python | — | **0 diferencias** en 3 976 fotogramas |
+| Velocidad | — | 25-26 FPS conectada; 17 FPS en batería con dos manos |
 
 **Limitaciones:**
 - La **P y la R** dependen de cómo cruces los dedos y en las pruebas se confundieron.
-- Aparecen algunas preguntas falsas con las cejas mientras haces letras, al mirar la mano o la pantalla.
-- Con dos manos y la laptop en batería, el reconocimiento baja a ~17 FPS.
-- El servidor es solo local.
-- El esqueleto va unos milisegundos detrás del video, porque espera al reconocimiento.
-- La práctica solo guarda la mejor racha.
-
-Detalles, cifras y la metodología completa en la [documentación técnica](docs/DOCUMENTACION.md).
-
-## Minería de datos desde videos (para entrenar la LSTM)
-
-`video_extractor.py` es una herramienta independiente del traductor. Toma los cortes de `dataset_config.json` (qué palabra hay en qué segundos de qué video de `datos/videos/`), extrae los landmarks 3D de las manos con el mismo pipeline que el modo en vivo y guarda cada seña como una secuencia de exactamente 30 fotogramas en `datos/dataset/<palabra>/seq_XX.npy`.
-
-```json
-[
-  {"video": "Tutorial Dilo en señas - Frutas.mp4", "palabra": "manzana", "inicio": "00:04.8", "fin": "00:09.1"},
-  {"video": "Tutorial Dilo en señas - Frutas.mp4", "palabra": "plátano", "inicio": "00:09.1", "fin": "00:13.2"}
-]
-```
-
-```powershell
-.\venv\Scripts\python.exe python\video_extractor.py --revisar   # valida tiempos y nombres sin correr MediaPipe
-.\venv\Scripts\python.exe python\video_extractor.py             # extrae solo los cortes nuevos o corregidos
-.\venv\Scripts\python.exe python\video_extractor.py --listar    # muestras por palabra
-```
-
-- **Tiempos:** `"MM:SS"`, `"HH:MM:SS"` o con décimas (`"00:04.8"`). Conviene dejar una holgura de unas décimas: los fotogramas sin manos de los extremos se quitan solos.
-- **Ejecuciones:** si dentro del corte el maestro hace la seña normal, baja las manos y la repite lento, cada ejecución se guarda como muestra aparte (`seq_01_1.npy` normal, `seq_01_2.npy` lenta). El corte se parte donde las manos quedan abajo o fuera de cuadro al menos 0.4 s.
-- **Normalización:** cada ejecución se remuestrea a 30 fotogramas por interpolación lineal (una de 40 se comprime, una de 20 se estira), así cada muestra va del inicio al final de la seña sin padding. Los huecos cortos donde MediaPipe pierde una mano se rellenan interpolando.
-- **Notas a mano:** `--importar "datos/videos/minutos exactos de videos.txt"` convierte líneas como `sordo: 11 s - 17 s` o `Mi nombre es: 1:08 - 1:21` (debajo de una línea con el nombre del video) en cortes de `dataset_config.json` y luego procesa.
-- **Videos terminados:** cuando todos los cortes de un video se extraen sin fallas, el video se mueve a `datos/videos/listo/` (desactivar con `--no-mover`); el extractor los sigue encontrando ahí.
-- **Vector por fotograma (254 números):** presencia de cada mano, y por mano 21 puntos en la imagen (movimiento) más 21 puntos 3D de mundo (forma). Solo vectores, ningún píxel.
-- **Incremental:** `datos/dataset/indice.json` recuerda de qué corte salió cada archivo. Al volver a correr solo se procesa lo nuevo o lo cambiado, y se borran las muestras de cortes que ya no están en la configuración.
-- **CSV:** también acepta `--config cortes.csv` con columnas `video,palabra,inicio,fin` (Excel con `;` también).
-- **Videos ya espejados** (grabados como selfie): agrega `"espejo": false` a esos cortes.
-- Para entrenar: `X, y = video_extractor.cargar_dataset()` da `X` de forma (N, 30, 254) y las palabras en `y`. Más opciones: `--help`.
-
-### Aumento de datos
-
-`data_augmentation.py` multiplica las muestras con variantes sintéticas. Cada variante combina ruido leve en las coordenadas (~2 % del tamaño de la mano), ritmo variable por tramos (entre 25/30 y 35/30 de la velocidad original, regresando a 30 fotogramas) y escala (distancia a la cámara ±15 %, tamaño de mano ±10 %). Las manos ausentes siguen en cero.
-
-```python
-from video_extractor import cargar_dataset
-from data_augmentation import aumentar
-X, y = cargar_dataset()
-X5, y5, origen = aumentar(X, y, factor=5)   # o factor=10
-```
-
-Separa entrenamiento y prueba **antes** de aumentar (o agrupa por `origen`): si variantes de una misma muestra quedan en ambos lados, la exactitud de prueba sale inflada. Para revisar o subir a Colab: `.\venv\Scripts\python.exe python\data_augmentation.py --factor 10` escribe `datos/dataset_aumentado.npz`.
-
-### Auto-etiquetado por voz (opcional)
-
-`auto_etiquetador.py` propone los cortes de `dataset_config.json` en los videos donde el maestro dice el nombre de la seña. Transcribe el audio con Whisper (`faster-whisper`, modelo `small`, en la CPU), toma las palabras dichas sueltas entre pausas y crea un corte que va de 0.5 s antes de cada palabra hasta 4 s después, sin llegar a la siguiente. Los videos sin voz utilizable quedan en `datos/requiere_anotacion_manual.txt` con el motivo.
-
-```powershell
-.\venv\Scripts\python.exe -m pip install faster-whisper            # una vez (~120 MB; el modelo, ~480 MB, se baja en la primera corrida)
-.\venv\Scripts\python.exe python\auto_etiquetador.py --simular            # ver qué propondría, sin escribir
-.\venv\Scripts\python.exe python\auto_etiquetador.py --vocabulario vocabulario.txt   # recomendado: solo esas palabras
-```
-
-- Solo procesa videos que aún no están en `dataset_config.json` ni en la lista manual; los cortes hechos a mano nunca se tocan. `--rehacer` vuelve a etiquetar lo que Whisper propuso antes.
-- Cada corte lleva `"origen": "whisper"` y `"oido"` (lo que se escuchó). **Revísalos antes de extraer**: en la prueba con los rótulos de "Tutorial Dilo en señas", los 9 cortes contenían la seña, pero Whisper oyó "fresa" donde se ve CEREZA.
-- `vocabulario.txt` (una palabra o frase por línea) descarta muletillas y letras sueltas, y corrige la ortografía ("durazmo" → "durazno").
-- Antes de escribir se respalda el archivo en `datos/dataset_config.json.bak`.
-
-## Calibración
-
-Los umbrales están agrupados al inicio de cada módulo (`python/classifier_hands.py` para las manos, `python/classifier_face.py` para el rostro), cada uno con el rango medido que lo justifica. Si una seña cuesta trabajo, activa el diagnóstico con la tecla **D**. Verás sobre el video, por cada mano:
-
-- el estado de cada dedo (`EXT` estirado, `DOB` doblado, `CER` cerrado) con su extensión y flexión;
-- la posición del pulgar y la normal de la palma;
-- los ángulos de la cabeza.
-
-Con eso puedes ajustar el umbral correspondiente.
+- Hay preguntas falsas con las cejas mientras haces letras, al mirar la mano o la pantalla.
+- Todo se calibró con una sola persona.
+- La versión del navegador aún no se midió con una cámara real; sus landmarks pueden diferir un poco de los de Python.
+- En la versión publicada no hay videos de demostración (los videos de terceros no se suben) y las muestras propias se guardan solo en ese navegador.
 
 ## Estructura
 
 ```
 Proyecto/
-├── python/                  # Todo el código Python
-│   ├── server.py            # Punto de entrada: FastAPI, WebSocket /ws, video MJPEG, abre el navegador
-│   ├── main.py              # Motor: bucle de proceso en su propio hilo
-│   ├── camara.py            # Captura en un hilo propio (fotograma más reciente) y JPEG del video
-│   ├── classifier_hands.py  # Manos: rasgos 3D, alfabeto y trazos
-│   ├── classifier_face.py   # Rostro: solvePnP, cejas, negar y asentir
-│   ├── traductor.py         # Hold-to-type por mano y orquestación de un fotograma
-│   ├── gestos.py            # Frases con movimiento: DTW contra el dataset y muestras propias (tecla G)
-│   ├── voice_engine.py      # Voz (SAPI de Windows) y puente al hardware
-│   ├── ui_panel.py          # Estado JSON con las coordenadas de las manos
-│   ├── video_extractor.py   # Herramienta: dataset para la LSTM desde videos
-│   ├── auto_etiquetador.py  # Herramienta: propone cortes a partir de la voz de los videos (Whisper)
-│   ├── data_augmentation.py # Herramienta: variantes sintéticas (ruido, ritmo, escala) para entrenar
-│   └── exportar_web.py      # Herramienta: plantillas y config para la versión web (web/datos/)
-├── static/                  # Interfaz web (la sirve python/server.py; en Vercel, vercel.json)
-│   ├── index.html           # Estructura (app shell + PWA: manifest.json, iconos)
-│   ├── estilos.css          # Temas claro/oscuro, maquetación y animaciones
-│   └── app.js               # Cliente (WebSocket o motor del navegador), video, esqueleto, tema y Modo Práctica
-├── web/                     # Versión web: el motor portado a JavaScript (corre en el navegador)
-│   ├── motor/               # manos, rostro, vector, gestos, traductor, presentacion, voz, motor
-│   └── datos/               # plantillas.bin / .json y config.json (los genera exportar_web.py)
-├── vercel.json, .vercelignore  # Publicación en Vercel (solo static/ y web/)
-├── datos/
-│   ├── dataset_config.json  # Cortes de los videos: video, palabra, inicio, fin (se versiona)
-│   ├── videos/              # Videos de entrada y notas de tiempos; los terminados pasan a videos/listo/ (no se suben)
-│   ├── dataset/             # Muestras de 30 fotogramas por palabra: seq_XX_N.npy y pablo_seq_XX.npy (no se sube)
-│   └── gestos_vivo.csv      # Cada evaluación de frases en vivo, para calibrar umbrales (no se sube)
-├── docs/
-│   ├── DOCUMENTACION.md     # Documentación técnica completa
-│   └── errores_detectado.txt # Pendientes anotados a mano
-├── .vscode/                 # F5 ejecuta python/server.py con el Python de venv
-├── venv/                    # Entorno virtual (no se sube a Git)
-├── .gitignore
-├── CLAUDE.md                # Mapa compacto para el asistente de código
-└── README.md
+├── python/        # Motor de reconocimiento, servidor FastAPI y herramientas del dataset
+├── static/        # Interfaz web (HTML, CSS, JS) y archivos de la PWA; es la misma para los dos motores
+├── web/           # Motor portado a JavaScript (web/motor), plantillas (web/datos) y pruebas de paridad
+├── datos/         # Cortes de los videos (dataset_config.json); videos y dataset no se suben
+├── docs/          # Documentación técnica y del dataset
+├── vercel.json    # Publicación en Vercel (solo static/ y web/)
+└── CLAUDE.md      # Mapa compacto del código para el asistente de programación
 ```
 
-Los comandos se corren desde la carpeta `Proyecto/` (`.\venv\Scripts\python.exe python\<archivo>.py`). Las rutas a `datos/` y `static/` salen de la ubicación del código, no de la carpeta actual.
+## Más documentación
+
+- [Documentación técnica](docs/DOCUMENTACION.md): arquitectura, alfabeto, decisiones de diseño, cifras y metodología completa.
+- [Dataset y entrenamiento](docs/DATASET.md): extracción desde videos, aumento de datos, auto-etiquetado y calibración.

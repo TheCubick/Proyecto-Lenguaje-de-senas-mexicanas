@@ -1,0 +1,12 @@
+Mejorar:
+- boton para decir la frase escrita
+
+Listas:
+- Adaptar pantalla para moviles
+- poder ejecutar iniciar dentro de la pagina
+- en traducir disminuir el tiempo para reconocer las palabras, letras
+- agregar más colores a la pagina, con botones primarios, secundarios, etc.
+- ordenar las frases para no mostrar palabras por do quier desde la más facil a la más dificil
+- agregar un muestra de como sería o como se realiza las palabras o letras
+- poder desactivar la voz o activar
+- en letras que el modo aleatorio cambie a medida que completes las letras
