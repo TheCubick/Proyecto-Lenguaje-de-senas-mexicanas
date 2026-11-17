@@ -22,6 +22,7 @@ mano) y la TRAYECTORIA de la muñeca en la imagen (relativa a su posición media
 importa dónde esté parado ni qué tan lejos).
 """
 import csv
+import re
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -40,10 +41,21 @@ BANDA = 8                              # DTW: desfase máximo en fotogramas (las
 MARGEN = 1.10                          # práctica: el objetivo es el más cercano o está a <= 10 % del más cercano
 DIST_MAX = 2.2                         # TEMPORAL para calibrar en vivo (2026-11-05): con 1.2 las frases del usuario no
                                # pasaban. Medido en videos: frases <= 0.98, deletreo 1.39-2.72 (ahí lo detiene la
-                               # separación, que llegó a 0.19). Ajustar con gestos_vivo.csv
+                               # separación, que llegó a 0.19). Ajustar con gestos_vivo.csv. Lo usa la PRÁCTICA
+DIST_MAX_TRADUCIR = 1.0                # al traducir (se escribe texto) más estricto. Medido 2026-11-12 con 260 plantillas:
+                               # frases correctas 0.05-0.67; deletreo del video Abecedario colaba 4 frases falsas a
+                               # 1.14-1.27 (HASTA MAÑANA, YO NO TRABAJO); en vivo, lo aceptado al traducir 0.23-0.50
 SEPARACION_MIN = 0.2                   # aceptar: 1 - d1/d2; deletreo <= 0.13. Rechaza empates (sordo / eres sordo)
+SOLO_DELETREO = re.compile(r"[a-zñ]|ll|rr|\d.*")   # letras (j, ll, ñ...) y números (0-1000, 1_millón): son
+                                       # muestras para la LSTM y para practicar, pero al traducir NUNCA se escriben
+                                       # como frase (el deletreo las escribe; una mano quieta sobre la seña D se
+                                       # parecería al 1 y borraría lo deletreado)
 SEPARACION_MIN_LARGA = 0.08            # frases de 3+ palabras (pedido del usuario). Medido: deletreo sigue 0/33; en
                                # gestos_vivo.csv solo 1/49 pasaría y era errónea (TENGO UN DUDA haciendo MI NOMBRE ES)
+DIST_CLARA = 0.55                      # al traducir, una frase de 2+ palabras a esta distancia o menos es inequívoca
+SEPARACION_MIN_CLARA = 0.03            # (2026-11-17: en vivo MI NOMBRE ES a 0.35 se rechazó por separación 0.06 < 0.08):
+                                       # basta separación 0.03. Medido en replay: las falsas del deletreo están a >= 1.14.
+                                       # Solo 2+ palabras: con una palabra pasó UVAS (0.399, sep 0.07) en DELETREA DESPACIO
 V_PAUSA = 2.5                          # muñeca, tamaños de mano/s: más rápido es un gesto y se pausan las letras
 PAUSA_TRAS_S = 0.8                     # las letras siguen en pausa este tiempo después del último movimiento rápido
 V_LENTO = 1.0                          # muñecas más lentas que esto (tamaños de mano/s) = pausa dentro del gesto
@@ -250,6 +262,7 @@ class ReconocedorGestos:
         cuadros = list(self.cuadros)
         ultimo = max((i for i, c in enumerate(cuadros) if c[2]), default=None)   # sin el reposo del final
         self.cuadros.clear()
+        movimiento = self.hubo_movimiento    # la muñeca pasó de V_PAUSA en algún momento del gesto
         self.t_abajo, self.t_lento, self.hubo_movimiento = None, None, False
         if ultimo is None:
             return
@@ -257,7 +270,7 @@ class ReconocedorGestos:
         segundos = cuadros[-1][0] - cuadros[0][0]
         base = {"objetivo": self.objetivo, "cierre": cierre, "segundos": round(segundos, 1), "mejor": None,
                 "distancia": None, "separacion": None, "aceptado": False, "acierto": None, "escrito": None,
-                "distancia_objetivo": None, "motivo": "", "top": []}
+                "distancia_objetivo": None, "motivo": "", "top": [], "movimiento": movimiento}
         if segundos < GESTO_MIN_S:                                       # manos que solo subieron y bajaron
             return self._reportar({**base, "motivo": f"duró {segundos:.1f} s (mínimo {GESTO_MIN_S:.0f} s)"})
         limpia, _ = limpiar(np.stack([c[1] for c in cuadros]))
@@ -274,9 +287,17 @@ class ReconocedorGestos:
         (mejor, d1), d2 = ranking[0], ranking[1][1] if len(ranking) > 1 else np.inf
         separacion = 1 - d1 / d2 if d2 > 0 else 0.0
         sep_min = SEPARACION_MIN_LARGA if mejor.count("_") >= 2 else SEPARACION_MIN
-        aceptado = bool(d1 <= DIST_MAX and separacion >= sep_min)
-        motivo = ("" if aceptado else f"distancia {d1:.2f} > {DIST_MAX}" if d1 > DIST_MAX
+        if d1 <= DIST_CLARA and "_" in mejor:      # frase de 2+ palabras muy cerca: la separación se exige menos
+            sep_min = min(sep_min, SEPARACION_MIN_CLARA)
+        aceptado = bool(d1 <= DIST_MAX_TRADUCIR and separacion >= sep_min)
+        motivo = ("" if aceptado else f"distancia {d1:.2f} > {DIST_MAX_TRADUCIR}" if d1 > DIST_MAX_TRADUCIR
                   else f"separación {separacion:.2f} < {sep_min}")
+        # Protección al traducir (2026-11-12): una frase solo se escribe si hubo movimiento real de la muñeca (las
+        # frases del dataset pasan de 2.75 tamaños de mano/s; sostener una letra, no) y nunca si es letra o número
+        if aceptado and SOLO_DELETREO.fullmatch(mejor):
+            aceptado, motivo = False, "letra o número: lo escribe el deletreo"
+        elif aceptado and not base["movimiento"]:
+            aceptado, motivo = False, "sin movimiento de la muñeca (seña quieta: la escribe el deletreo)"
         acierto = d_objetivo = None
         objetivo = base["objetivo"]
         if objetivo is not None:           # práctica: el candidato más cercano con margen relativo (sin separación)

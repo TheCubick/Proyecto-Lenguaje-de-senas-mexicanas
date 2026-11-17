@@ -1,0 +1,14 @@
+{
+  "nota": "Clips de referencia para el Modo Práctica: [inicio, fin] en segundos. Las frases salen solas de dataset_config.json; las letras, de aquí. Letras medidas el 2026-11-10 con el clasificador estático sobre el video y revisadas fotograma por fotograma (LL y RR del video se saltan: no están en la guía).",
+  "letras": {
+    "video": "Alfabeto de Lengua de Señas Mexicana.mp4",
+    "tramos": {
+      "A": [5.2, 8.3], "B": [8.1, 11.4], "C": [11.2, 14.0], "D": [13.8, 17.4], "E": [17.2, 20.1],
+      "F": [19.9, 23.4], "G": [23.2, 26.2], "H": [26.0, 29.2], "I": [29.0, 32.3], "J": [32.1, 35.3],
+      "K": [35.1, 37.9], "L": [37.7, 40.9], "M": [44.2, 47.1], "N": [46.9, 50.2], "Ñ": [50.0, 53.4],
+      "O": [53.2, 56.3], "P": [56.1, 59.6], "Q": [59.4, 62.3], "R": [62.1, 65.3], "S": [68.0, 71.3],
+      "T": [71.1, 74.1], "U": [73.9, 77.1], "V": [76.9, 80.0], "W": [79.8, 82.8], "X": [82.6, 85.6],
+      "Y": [85.4, 88.7], "Z": [88.5, 92.0]
+    }
+  }
+}

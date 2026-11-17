@@ -17,6 +17,8 @@ dataset/
 *.npz
 gestos_vivo.csv
 videos/
+web/pruebas/fixtures/
+.vercel/
 *.mp4
 *.webm
 *.mkv

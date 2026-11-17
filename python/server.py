@@ -3,7 +3,10 @@
 Ejecutar:  .\\venv\\Scripts\\python.exe python\\server.py   -> abre http://localhost:5000 en el navegador predeterminado.
 - /ws: por cada frame procesado, UN mensaje de texto (JSON: señas, texto, rostro y coordenadas de las manos,
   ~0.5-1.6 KB). El navegador manda acciones {"accion": "ESPACIO" | "BORRAR" | "LIMPIAR" | "DIAGNOSTICO" |
-  "RECALIBRAR" | "PROBAR_VOZ" | "GUARDAR_MUESTRA" | "SALIR"} y {"accion": "GESTO", "objetivo": frase | null}.
+  "RECALIBRAR" | "GUARDAR_MUESTRA" | "LEER" | "INICIAR" | "PAUSAR" | "SALIR"}, {"accion": "GESTO", "objetivo": frase | null},
+  {"accion": "VOZ", "activa": bool, "anunciar": bool} y {"accion": "VELOCIDAD", "segundos": 0.5-2.0}.
+  INICIAR / PAUSAR abren y cierran la cámara sin cerrar el servidor; en pausa se publica {"tipo": "pausa"}.
+- /videos/<nombre>: clips de referencia del Modo Práctica (solo los videos de ui_panel.demostraciones).
 - /video_feed: vista previa de la cámara (multipart/x-mixed-replace, JPEG calidad 70) para un <img>. Sale del
   fotograma más nuevo SIN esperar a MediaPipe; el navegador dibuja el esqueleto encima con los datos de /ws.
 Python es el único dueño de la cámara (en Windows el navegador no siempre puede compartirla). Solo 127.0.0.1.
@@ -24,12 +27,14 @@ from fastapi.staticfiles import StaticFiles
 
 from camara import CamaraReciente, a_jpeg
 from main import ACCIONES_TEXTO, capturar
-from ui_panel import config_web
+from traductor import VELOCIDAD_MAX, VELOCIDAD_MIN, Traductor
+from ui_panel import config_web, demostraciones
+from voice_engine import VOZ_HABILITADA, VozAsincrona
 
 HOST, PUERTO = "127.0.0.1", 5000
 URL = f"http://localhost:{PUERTO}"
 ESTATICOS = Path(__file__).resolve().parent.parent / "static"   # python/ y static/ son carpetas hermanas
-ACCIONES = set(ACCIONES_TEXTO) | {"DIAGNOSTICO", "RECALIBRAR", "PROBAR_VOZ", "GUARDAR_MUESTRA"}
+ACCIONES = set(ACCIONES_TEXTO) | {"DIAGNOSTICO", "RECALIBRAR", "GUARDAR_MUESTRA", "LEER"}
 
 
 class Difusor:
@@ -57,31 +62,75 @@ class Difusor:
 
 difusor = Difusor()
 comandos = queue.Queue()
-detener = threading.Event()
+apagar = threading.Event()     # cierre del servidor
 servidor = None
 camara = None                  # CamaraReciente compartida: la consume el proceso y la lee (sin consumir) el video
+traductor = None               # uno para toda la sesión: el texto y las muestras sobreviven a las pausas
+voz = None                     # igual: la voz silenciada sigue silenciada al reanudar
+motor = {"hilo": None, "detener": None}
+cerrojo_motor = threading.Lock()
 
 
 def _cerrando():
-    return detener.is_set() or (servidor is not None and servidor.should_exit)
+    return apagar.is_set() or (servidor is not None and servidor.should_exit)
+
+
+def iniciar_motor():
+    """Abre la cámara y arranca el hilo de proceso (botón Iniciar). No hace nada si ya corre."""
+    global camara
+    with cerrojo_motor:
+        if motor["hilo"] is not None and motor["hilo"].is_alive():
+            return
+        camara = CamaraReciente(0)
+        motor["detener"] = threading.Event()
+        motor["hilo"] = threading.Thread(target=capturar, name="proceso", daemon=True,
+                                         args=(camara, difusor.publicar, comandos, motor["detener"], traductor, voz))
+        motor["hilo"].start()
+
+
+def pausar_motor(avisar=True):
+    """Detiene el hilo de proceso y apaga la cámara (botón Pausar); el servidor y el texto siguen."""
+    global camara
+    with cerrojo_motor:
+        if motor["hilo"] is None:
+            return
+        motor["detener"].set()
+        motor["hilo"].join(5)
+        motor["hilo"] = None
+        if camara is not None:
+            camara.cerrar()
+            camara = None
+        traductor.gestos.poner_objetivo(traductor.gestos.objetivo)   # sin un gesto a medias al reanudar
+    if avisar:
+        difusor.publicar(json.dumps({"tipo": "pausa"}))
 
 
 @asynccontextmanager
 async def ciclo_de_vida(app):
-    global camara
-    camara = await asyncio.to_thread(CamaraReciente, 0)
-    hilo = threading.Thread(target=capturar, args=(camara, difusor.publicar, comandos, detener), name="proceso",
-                            daemon=True)
-    hilo.start()
+    global traductor, voz
+    traductor = await asyncio.to_thread(Traductor)
+    voz = VozAsincrona(VOZ_HABILITADA)
+    await asyncio.to_thread(iniciar_motor)
     threading.Timer(1.0, webbrowser.open, args=(URL,)).start()
     yield
-    detener.set()
-    await asyncio.to_thread(hilo.join, 5)
-    camara.cerrar()
+    apagar.set()
+    await asyncio.to_thread(pausar_motor, False)
+    voz.cerrar()
 
 
 app = FastAPI(lifespan=ciclo_de_vida, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=ESTATICOS), name="static")
+
+
+@app.middleware("http")
+async def sin_cache(request, siguiente):
+    """La interfaz (/ y /static/) se revalida en cada carga: sin esto el navegador reusaba su copia en caché y,
+    tras actualizar los archivos, mostraba la página vieja con el motor nuevo (2026-11-10). Con ETag la respuesta
+    es un 304 sin cuerpo si nada cambió."""
+    respuesta = await siguiente(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        respuesta.headers["Cache-Control"] = "no-cache"
+    return respuesta
 
 
 @app.get("/")
@@ -92,11 +141,11 @@ async def inicio():
 async def _fotogramas_mjpeg():
     """Cada fotograma nuevo de la cámara como una parte JPEG del flujo multipart. Si el navegador va lento, se
     salta fotogramas (siempre el más nuevo). Termina al cerrar el servidor o si la cámara se pierde."""
-    visto = 0
+    visto, cam = 0, camara                   # la de este flujo: al pausar se cierra y el flujo termina
     while not _cerrando():
-        paquete = await asyncio.to_thread(camara.leer, visto, 0.5, False)
+        paquete = await asyncio.to_thread(cam.leer, visto, 0.5, False)
         if paquete is None:
-            if not camara.activa:
+            if not cam.activa:
                 return
             continue
         visto, frame, _ = paquete
@@ -114,6 +163,14 @@ async def video_feed():
                              headers={"Cache-Control": "no-store"})
 
 
+@app.get("/videos/{nombre}")
+async def video_demo(nombre: str):
+    """Video original de una demostración (el <video> pide rangos para saltar al corte). Lista blanca: nunca se
+    sirve un archivo que no esté en demostraciones()."""
+    ruta = demostraciones()[1].get(nombre)
+    return FileResponse(ruta, media_type="video/mp4") if ruta else Response(status_code=404)
+
+
 async def _recibir(ws):
     """Acciones del navegador -> cola del hilo de proceso (el único que toca el texto)."""
     while True:
@@ -126,6 +183,16 @@ async def _recibir(ws):
             return
         if accion == "SALIR" and servidor is not None:
             servidor.should_exit = True
+        elif accion == "INICIAR":
+            await asyncio.to_thread(iniciar_motor)
+        elif accion == "PAUSAR":
+            await asyncio.to_thread(pausar_motor)
+        elif accion == "VOZ":                # interruptor de voz; "anunciar" = decir "Voz activada"
+            comandos.put(("VOZ", bool(mensaje.get("activa")), bool(mensaje.get("anunciar"))))
+        elif accion == "VELOCIDAD":          # segundos del hold-to-type (Lenta / Normal / Rápida)
+            s = mensaje.get("segundos")
+            if isinstance(s, (int, float)) and VELOCIDAD_MIN <= s <= VELOCIDAD_MAX:
+                comandos.put(("VELOCIDAD", float(s)))
         elif accion == "GESTO":              # objetivo del Modo Práctica (None = ninguno); se valida en gestos.py
             objetivo = mensaje.get("objetivo")
             comandos.put(("GESTO", objetivo if isinstance(objetivo, str) else None))
@@ -179,7 +246,7 @@ def main():
     sin_ahorro_de_energia()
     servidor = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PUERTO, log_level="warning",
                                              timeout_graceful_shutdown=2))
-    print(f"Traductor LSM en {URL}  (Ctrl+C o el botón Detener para salir)")
+    print(f"Traductor LSM en {URL}  (Ctrl+C o el botón Apagar para salir)")
     servidor.run()
     print("Programa cerrado correctamente.")
 

@@ -36,21 +36,22 @@ def _error(publicar, mensaje):
     publicar(json.dumps({"tipo": "error", "mensaje": mensaje}, ensure_ascii=False))
 
 
-def capturar(cam, publicar, comandos, detener):
+def capturar(cam, publicar, comandos, detener, traductor=None, voz=None):
     """Bucle de procesamiento (en su propio hilo; la lectura de la cámara va en otro, ver camara.py).
 
     cam: CamaraReciente (la abre y la cierra server.py, que también la usa para el video); publicar(estado_json):
     entrega el estado de cada frame; comandos: cola con acciones de la interfaz ("ESPACIO", "BORRAR", "LIMPIAR",
-    "DIAGNOSTICO", "RECALIBRAR", "PROBAR_VOZ", "GUARDAR_MUESTRA", o ("GESTO", palabra | None) para el Modo
-    Práctica); detener: threading.Event que
-    termina el bucle."""
+    "DIAGNOSTICO", "RECALIBRAR", "GUARDAR_MUESTRA", "LEER", ("GESTO", palabra | None) para el Modo Práctica,
+    ("VOZ", activa, anunciar) y ("VELOCIDAD", segundos) del hold-to-type); detener: threading.Event que termina
+    el bucle. traductor y voz: los de server.py, que sobreviven a las pausas de la cámara (texto, voz silenciada)."""
     if not cam.activa:
         _error(publicar, "El motor no pudo abrir la cámara. Verifica que esté conectada y que otra app no la use.")
         return
 
-    traductor = Traductor()
+    traductor = traductor or Traductor()
     escritor, analizador = traductor.escritor, traductor.analizador
-    voz = VozAsincrona(VOZ_HABILITADA)
+    propia = voz is None                       # sin la de server.py (pruebas): se crea y se cierra aquí
+    voz = voz or VozAsincrona(VOZ_HABILITADA)
     politica = PoliticaVoz(voz)
     barra = ProgresoSuave()
     texto_enviado = escritor.texto
@@ -92,16 +93,22 @@ def capturar(cam, publicar, comandos, detener):
                         break
                     if isinstance(accion, tuple) and accion[0] == "GESTO":
                         traductor.gestos.poner_objetivo(accion[1])
+                    elif isinstance(accion, tuple) and accion[0] == "VOZ":    # interruptor de voz del encabezado
+                        voz.silenciar(not accion[1])
+                        if accion[1] and accion[2]:
+                            voz.decir("Voz activada", "palabra")         # al encenderla: prueba de bocinas
+                    elif isinstance(accion, tuple) and accion[0] == "VELOCIDAD":
+                        escritor.segundos = accion[1]
                     elif accion in ACCIONES_TEXTO:
                         escritor.ejecutar(accion, ahora)
                     elif accion == "DIAGNOSTICO":
                         diagnostico = not diagnostico
                     elif accion == "RECALIBRAR":
                         analizador.recalibrar()
-                    elif accion == "PROBAR_VOZ":       # clic en la pastilla de voz: comprobar las bocinas
-                        voz.decir("Voz activada", "palabra")
                     elif accion == "GUARDAR_MUESTRA":  # tecla G en Práctica > Frases: muestra propia al dataset
                         traductor.gestos.guardar_muestra()
+                    elif accion == "LEER":             # botón Leer (L): todo el texto escrito, en voz alta
+                        voz.decir(escritor.texto.lower(), "palabra", forzar=True)
 
                 # --- Percepción (cada canal tolera fallos por separado) ---
                 t_manos = time.perf_counter()
@@ -145,12 +152,13 @@ def capturar(cam, publicar, comandos, detener):
                            "rostro_ms": round((t_motor - t_rostro) * 1000, 1),
                            "motor_ms": round((t_fin - t_motor) * 1000, 1),
                            "descartados": cam.descartados}
-                estado = estado_web(traductor, manos, vistas, principal, progreso, fps, voz.estado, (ancho, alto),
+                estado = estado_web(traductor, manos, vistas, principal, progreso, fps, voz.estado_web, (ancho, alto),
                                     diagnostico, tiempos)
                 estado["gesto"] = traductor.gestos.web(ahora)    # gesto en curso y, una vez, su evaluación
                 publicar(json.dumps(estado, ensure_ascii=False, separators=(",", ":")))
         finally:
-            voz.cerrar()
+            if propia:
+                voz.cerrar()
 
     print(f"Texto final: {limpiar_texto(escritor.texto)!r}")
 

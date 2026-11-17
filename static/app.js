@@ -5,11 +5,28 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+
+// Dónde corre el reconocimiento: con server.py (localhost) por WebSocket; publicado (Vercel u otro hosting estático)
+// o con ?motor=navegador, en este mismo navegador (web/motor/motor.js, MediaPipe en JS). La interfaz es la misma.
+const MOTOR_LOCAL = new URLSearchParams(location.search).get("motor") === "navegador"
+  || !["localhost", "127.0.0.1"].includes(location.hostname);
+let MotorLocal = null;                                     // clase de web/motor/motor.js (se importa al conectar)
+if (MOTOR_LOCAL) {                                         // la cámara llega como MediaStream: <video> en lugar de <img>
+  const img = $("video");
+  const v = Object.assign(document.createElement("video"), { id: img.id, className: img.className, muted: true, playsInline: true, autoplay: true });
+  v.setAttribute("aria-label", img.alt);
+  img.replaceWith(v);
+}
 const LADOS = ["Izq", "Der"];
 const NOMBRE_LADO = { Izq: "Mano izquierda", Der: "Mano derecha" };
 const CIRCUNFERENCIA = 2 * Math.PI * 104;
 const CEJAS_MIN = 0.95, CEJAS_MAX = 1.20;     // rango del medidor de cejas
-const PALABRAS = ["HOLA", "GRACIAS", "AMIGO", "CASA", "AGUA", "NIÑO", "FELIZ", "JUEGO", "QUESO", "KIWI"];
+const PALABRAS = ["SOL", "OSO", "MAMA", "CASA", "AGUA", "HOLA", "LUNA", "AMIGO", "FELIZ", "GRACIAS", "NIÑO",
+                  "JUEGO", "QUESO", "KIWI", "MEXICO", "QUEJA", "ZANJA"];
+// Niveles de dificultad (Práctica): frases por número de palabras; deletreo por largo y letras con movimiento
+// 4 y 5: letras con movimiento y números del dataset, aparte (al traducir no se escriben como frase: gestos.py)
+const NIVELES = { 1: "Básico", 2: "Intermedio", 3: "Avanzado", 4: "Letras con movimiento", 5: "Números" };
+const VELOCIDADES = [1.5, 1, 0.7];                  // s del hold-to-type: Lenta / Normal / Rápida
 
 const ICONOS = {
   neutro: '<circle cx="12" cy="12" r="10"/><path d="M8 15h8"/><path d="M9 9h.01M15 9h.01"/>',
@@ -33,7 +50,8 @@ const MODOS = {
   AFIRMACION: ["Afirmación", "Palabra confirmada", "afirmacion"],
 };
 
-const VOZ = { lista: "Voz lista", iniciando: "Iniciando voz", desactivada: "Voz apagada", "no disponible": "Sin voz" };
+const VOZ = { lista: "Voz activa", silenciada: "Voz apagada", iniciando: "Iniciando voz", desactivada: "Voz apagada",
+              "no disponible": "Sin voz" };
 
 let socket = null;
 let detenido = false;
@@ -42,7 +60,10 @@ let claves = [];               // orden del alfabeto (para la tira de práctica)
 let bases = {};                // seña con movimiento -> configuraciones base (J <- I, Y)
 let gestos = [];               // palabras y frases con muestras en dataset/ (práctica dinámica)
 let diagGesto = null;          // última evaluación del reconocedor de frases: { texto, tono }
-let segundos = 1.5;
+let segundos = VELOCIDADES.includes(Number(leer("lsm-velocidad"))) ? Number(leer("lsm-velocidad")) : 1;
+let vozActiva = leer("lsm-voz") !== "off";    // preferencia de la persona (se manda al motor al conectar)
+let pausado = false;                                 // cámara en pausa (botón Pausar / Iniciar)
+let demos = {};                                      // clave -> {url, inicio, fin}: clip de cómo se hace
 let umbralCejas = 1.08;
 let textoPrevio = null;
 let estadoPrevio = null;
@@ -78,10 +99,13 @@ function reiniciarAnimacion(el, clase) {
 function enviar(accion) {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ accion }));
 }
-function aviso(texto, error = false) {
+function aviso(texto, error = false, conIniciar = false) {
   const el = $("aviso");
   el.hidden = texto === null;
   el.classList.toggle("error", error);
+  el.classList.toggle("pausa", conIniciar && !error);
+  $("aviso-iniciar").hidden = !conIniciar;
+  poner($("aviso-iniciar").lastElementChild, error ? "Reintentar" : "Iniciar cámara");
   if (texto !== null) poner($("aviso-texto"), texto);
 }
 function nombreSena(s) {
@@ -101,6 +125,7 @@ function fase(estado, progreso) {
 // ---------- tema claro / oscuro ----------
 function aplicarTema(tema) {
   document.documentElement.dataset.theme = tema;
+  $("meta-tema").content = tema === "light" ? "#edf1f8" : "#090c13";     // barra del sistema / ventana instalada
   const b = $("btn-tema");
   b.setAttribute("aria-checked", String(tema === "dark"));
   b.setAttribute("aria-label", tema === "dark" ? "Tema oscuro" : "Tema claro");
@@ -110,15 +135,36 @@ function aplicarTema(tema) {
                   exito: css.getPropertyValue("--verde").trim() };
   dibujado = null;                                    // redibujar el esqueleto con los colores nuevos
 }
-// Clic (o Enter) en la pastilla de voz: el motor dice "Voz activada" para comprobar las bocinas
-function probarVoz() {
-  enviar("PROBAR_VOZ");
+// Interruptor de voz: al activarla el motor dice "Voz activada" (sirve de prueba de bocinas)
+function enviarJSON(obj) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
+}
+function alternarVoz() {
+  vozActiva = !vozActiva;
+  guardar("lsm-voz", vozActiva ? "on" : "off");
+  $("voz").setAttribute("aria-pressed", String(vozActiva));
+  enviarJSON({ accion: "VOZ", activa: vozActiva, anunciar: true });
   reiniciarAnimacion($("voz"), "sube");
 }
-$("voz").addEventListener("click", probarVoz);
-$("voz").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); probarVoz(); }
-});
+$("voz").addEventListener("click", alternarVoz);
+$("voz").setAttribute("aria-pressed", String(vozActiva));
+
+// Preferencias que viven en el navegador y se mandan al motor en cada conexión (y al reanudar la cámara)
+function enviarPreferencias() {
+  enviarJSON({ accion: "VOZ", activa: vozActiva, anunciar: false });
+  enviarJSON({ accion: "VELOCIDAD", segundos });
+}
+
+// ---------- velocidad del hold-to-type (vista Traducir) ----------
+function elegirVelocidad(s) {
+  segundos = s;
+  guardar("lsm-velocidad", String(s));
+  for (const b of $("velocidad").children) b.setAttribute("aria-checked", String(Number(b.dataset.segundos) === s));
+  poner($("velocidad-ayuda"), `Sostén la seña quieta ${s.toLocaleString("es-MX")} s`);
+  enviarJSON({ accion: "VELOCIDAD", segundos: s });
+  if (practica.activa) actualizarReferencia();
+}
+for (const b of $("velocidad").children) b.addEventListener("click", () => elegirVelocidad(Number(b.dataset.segundos)));
 
 $("btn-tema").addEventListener("click", () =>
   aplicarTema(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
@@ -127,28 +173,43 @@ aplicarTema(document.documentElement.dataset.theme === "light" ? "light" : "dark
 // ---------- conexión ----------
 function actualizarAviso() {
   if (errorMotor) return;                             // el mensaje de error del motor se queda a la vista
+  if (pausado) {
+    aviso("Cámara en pausa. El texto y tu práctica se conservan.", false, true);
+    return;
+  }
   if (!motorListo) aviso("Conectando con el motor de reconocimiento…");
   else if (estadoVideo === "pendiente") aviso("Cargando el video de la cámara…");
   else aviso(null);
 }
 
 function conectar() {
-  socket = new WebSocket(`ws://${location.host}/ws`);
+  if (MOTOR_LOCAL && !MotorLocal) {
+    aviso("Cargando el motor de reconocimiento…");
+    import("/web/motor/motor.js")
+      .then((m) => { MotorLocal = m.MotorLocal; conectar(); })
+      .catch(() => aviso("No se pudo cargar el motor. Revisa la conexión y recarga la página.", true));
+    return;
+  }
+  socket = MOTOR_LOCAL ? new MotorLocal() : new WebSocket(`ws://${location.host}/ws`);
   socket.onopen = () => {
     errorMotor = false;
     atributo($("conexion"), "data-conexion", "vivo");
     poner($("conexion-texto"), "En vivo");
+    enviarPreferencias();
     actualizarAviso();
   };
   socket.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.tipo === "estado") return mostrarEstado(msg);
     if (msg.tipo === "config") return configurar(msg);
+    if (msg.tipo === "pausa") return mostrarPausa();
+    if (msg.tipo === "cargando") return aviso(msg.mensaje);   // motor en el navegador: descargando modelos
     if (msg.tipo === "error") {
       errorMotor = true;
+      marcarMotor(true);                                // el botón Iniciar sirve para reintentar
       atributo($("conexion"), "data-conexion", "error");
       poner($("conexion-texto"), "Sin cámara");
-      aviso(msg.mensaje, true);
+      aviso(msg.mensaje, true, true);
     }
   };
   socket.onclose = () => {
@@ -159,7 +220,7 @@ function conectar() {
     if (detenido) {
       atributo($("conexion"), "data-conexion", "error");
       poner($("conexion-texto"), "Detenido");
-      aviso("Traductor detenido. La cámara está apagada; ya puedes cerrar esta pestaña.", true);
+      aviso("Traductor apagado. La cámara está apagada; ya puedes cerrar esta pestaña.", true);
       return;
     }
     atributo($("conexion"), "data-conexion", "conectando");
@@ -177,6 +238,11 @@ const video = $("video");
 function iniciarVideo() {
   estadoVideo = "pendiente";
   actualizarAviso();
+  if (MOTOR_LOCAL) {                                // la misma cámara que procesa el motor del navegador
+    video.srcObject = socket.stream;
+    video.play().catch(() => {});
+    return;
+  }
   video.src = `/video_feed?t=${Date.now()}`;       // parámetro nuevo: nunca reutilizar un flujo cerrado de caché
 }
 
@@ -187,7 +253,7 @@ video.addEventListener("error", () => {
 });
 
 function revisarVideo() {
-  if (estadoVideo === "pendiente" && video.naturalWidth > 0) {
+  if (estadoVideo === "pendiente" && (video.naturalWidth || video.videoWidth) > 0) {
     estadoVideo = "lista";
     $("lienzo").classList.remove("solo-esqueleto");
     $("lienzo").classList.add("con-video");
@@ -207,6 +273,7 @@ function soloEsqueleto(motivo) {
 
 function detenerVideo() {
   video.removeAttribute("src");                     // cierra la conexión del flujo
+  if (MOTOR_LOCAL) video.srcObject = null;
   $("lienzo").classList.remove("con-video", "solo-esqueleto");
   $("modo-esqueleto").hidden = true;
   estadoVideo = "pendiente";
@@ -327,8 +394,8 @@ requestAnimationFrame(cuadro);
 // ---------- configuración (una vez por conexión) ----------
 function configurar(cfg) {
   umbralCejas = cfg.umbral_cejas;
-  segundos = cfg.segundos;
   bases = cfg.bases;
+  demos = cfg.demos ?? {};
   conexiones = cfg.conexiones;
   $("cejas-umbral").style.left = `${fraccionCejas(umbralCejas) * 100}%`;
   const lista = $("guia-lista");
@@ -355,6 +422,7 @@ function configurar(cfg) {
     guia[g.clave] = { ...g, li };
   }
   construirTira();
+  construirChips();                     // los niveles del deletreo dependen de qué letras llevan movimiento
   gestos = cfg.gestos ?? [];
   if (!gestos.includes(practica.gesto)) practica.gesto = gestos[0] ?? null;
   construirChipsGestos();
@@ -380,6 +448,14 @@ function textoEstado(e) {
 function mostrarEstado(e) {
   // --- Primer estado de esta conexión: el motor ya tiene la cámara; se pide su video ---
   ultimo = e;
+  if (pausado || errorMotor) {                         // la cámara volvió (Iniciar)
+    pausado = false;
+    errorMotor = false;
+    marcarMotor(false);
+    atributo($("conexion"), "data-conexion", "vivo");
+    poner($("conexion-texto"), "En vivo");
+    enviarPreferencias();
+  }
   if (!motorListo) {
     motorListo = true;
     $("lienzo").style.setProperty("--ar", (e.tamano[0] / e.tamano[1]).toFixed(4));
@@ -490,7 +566,7 @@ function mostrarEstado(e) {
     textoPrevio = e.texto;
   }
 
-  mostrarDiagnosticoGesto(e.gesto);
+  mostrarDiagnosticoGesto(e.gesto, !!e.diagnostico);
 
   // --- Sistema ---
   poner($("fps"), e.fps.toFixed(0));
@@ -521,6 +597,7 @@ const practica = {
   racha: 0,
   mejor: Number(leer("lsm-mejor-racha")) || 0,
   ocupada: false,              // durante la celebración no se cuentan registros nuevos
+  aleatorio: false,            // letras: al acertar pasa sola a otra letra al azar
   previo: { Izq: { estado: "ninguna", sena: null }, Der: { estado: "ninguna", sena: null } },
   dominadas: new Set(),
 };
@@ -553,7 +630,7 @@ function cambiarVista(vista) {
   $("practica").hidden = !practica.activa;
   $("tarjeta-video").classList.remove("coincide");
   guardar("lsm-vista", vista);
-  if (practica.activa) { actualizarReferencia(); centrarLetra(); }
+  if (practica.activa) { actualizarReferencia(); centrarLetra(); } else mostrarDemo(null);
   sincronizarGesto();
 }
 for (const b of document.querySelectorAll("[data-vista]")) b.addEventListener("click", () => cambiarVista(b.dataset.vista));
@@ -627,25 +704,66 @@ function moverLetra(paso) {
 }
 $("letra-anterior").addEventListener("click", () => moverLetra(-1));
 $("letra-siguiente").addEventListener("click", () => moverLetra(1));
+// Modo aleatorio: al activarlo salta a una letra al azar y, cada vez que aciertas, a otra (primero las que aún
+// no dominas; cuando ya las dominas todas, cualquiera). Solo letras: Espacio, Borrar y ? quedan fuera
+function letraAlAzar() {
+  const letras = claves.filter((c) => c.length === 1 && c !== "?" && c !== practica.letra);
+  const pendientes = letras.filter((c) => !practica.dominadas.has(c));
+  const pool = pendientes.length ? pendientes : letras;
+  if (pool.length) elegirLetra(pool[Math.floor(Math.random() * pool.length)]);
+}
 $("letra-azar").addEventListener("click", () => {
-  const otras = claves.filter((c) => c !== practica.letra);
-  if (otras.length) elegirLetra(otras[Math.floor(Math.random() * otras.length)]);
+  practica.aleatorio = !practica.aleatorio;
+  $("letra-azar").setAttribute("aria-pressed", String(practica.aleatorio));
+  if (practica.aleatorio) letraAlAzar();
 });
 
-function construirChips() {
-  const chips = $("chips-palabras");
-  chips.textContent = "";
-  for (const p of PALABRAS) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = p;
-    b.addEventListener("click", () => elegirPalabra(p));
-    chips.append(b);
+// Grupos de chips por nivel (1 Básico, 2 Intermedio, 3 Avanzado), cada grupo ordenado de lo corto a lo largo
+function construirNiveles(contenedor, items, nivel, texto, atributoDato, alElegir, ayuda) {
+  contenedor.textContent = "";
+  const orden = [...items].sort((a, b) => nivel(a) - nivel(b) || texto(a).length - texto(b).length ||
+                                          texto(a).localeCompare(texto(b), "es", { numeric: true }));
+  for (const n of [1, 2, 3, 4, 5]) {
+    const del = orden.filter((i) => nivel(i) === n);
+    if (!del.length) continue;
+    const grupo = document.createElement("div");
+    grupo.className = "nivel";
+    grupo.dataset.nivel = String(n);
+    const titulo = document.createElement("span");
+    titulo.className = "nivel-titulo";
+    const punto = document.createElement("i");
+    const nota = document.createElement("small");
+    nota.textContent = ayuda[n];
+    titulo.append(punto, NIVELES[n], nota);
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    for (const i of del) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset[atributoDato] = i;
+      b.textContent = texto(i);
+      b.addEventListener("click", () => alElegir(i));
+      chips.append(b);
+    }
+    grupo.append(titulo, chips);
+    contenedor.append(grupo);
   }
+}
+
+function nivelPalabra(p) {
+  const conMovimiento = [...p].filter((c) => guia[c]?.mov).length;
+  if (!conMovimiento) return p.length <= 4 ? 1 : 2;
+  return conMovimiento === 1 && p.length <= 5 ? 2 : 3;
+}
+function construirChips() {
+  construirNiveles($("chips-palabras"), PALABRAS, nivelPalabra, (p) => p, "palabra", elegirPalabra,
+                   { 1: "palabras cortas", 2: "más letras", 3: "letras con movimiento" });
   marcarChips();
 }
 function marcarChips() {
-  for (const b of $("chips-palabras").children) b.setAttribute("aria-selected", String(b.textContent === practica.palabra));
+  for (const b of $("chips-palabras").querySelectorAll("button[data-palabra]")) {
+    b.setAttribute("aria-selected", String(b.dataset.palabra === practica.palabra));
+  }
 }
 function elegirPalabra(p) {
   practica.palabra = p;
@@ -662,22 +780,19 @@ $("form-palabra").addEventListener("submit", (ev) => {
   elegirPalabra(p);
 });
 
+function nivelGesto(g) {
+  if (/^([a-zñ]|ll|rr)$/.test(g)) return 4;            // mismo criterio que gestos.SOLO_DELETREO
+  if (/^\d/.test(g)) return 5;
+  return Math.min(3, g.split("_").length);
+}
 function construirChipsGestos() {
-  const chips = $("chips-gestos");
-  chips.textContent = "";
   $("sin-gestos").hidden = gestos.length > 0;
-  for (const g of gestos) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.dataset.gesto = g;
-    b.textContent = textoGesto(g);
-    b.addEventListener("click", () => elegirGesto(g));
-    chips.append(b);
-  }
+  construirNiveles($("chips-gestos"), gestos, nivelGesto, textoGesto, "gesto", elegirGesto,
+                   { 1: "una palabra", 2: "dos palabras", 3: "frases completas", 4: "J, K, LL, Ñ, Q, RR, X, Z", 5: "del 0 al trillón" });
   marcarChipsGestos();
 }
 function marcarChipsGestos() {
-  for (const b of $("chips-gestos").children) {
+  for (const b of $("chips-gestos").querySelectorAll("button[data-gesto]")) {
     b.setAttribute("aria-selected", String(b.dataset.gesto === practica.gesto));
     b.classList.toggle("dominada", practica.dominadas.has(b.dataset.gesto));
   }
@@ -703,8 +818,40 @@ function pintarFichas() {
 }
 
 // --- tarjeta de referencia ---
+// Demostración: clip del video original de la seña (ui_panel.demostraciones), en bucle entre inicio y fin
+const demo = $("demo-video");
+let demoActual = null;
+function mostrarDemo(clave) {
+  const d = practica.activa && clave ? demos[clave] : null;
+  $("ref-demo").hidden = !d;
+  $("ref-frente").classList.toggle("con-demo", !!d);
+  if (!d) {
+    demo.pause();
+    demoActual = null;
+    return;
+  }
+  if (demoActual === d) return;
+  demoActual = d;
+  if (demo.getAttribute("src") !== d.url) demo.src = d.url;   // mismo video (alfabeto): solo se salta al tramo
+  if (demo.readyState >= 1) demo.currentTime = d.inicio;
+  demo.play().catch(() => { /* el navegador puede bloquear la reproducción hasta que haya un clic */ });
+}
+demo.addEventListener("loadedmetadata", () => { if (demoActual) demo.currentTime = demoActual.inicio; });
+demo.addEventListener("timeupdate", () => {
+  if (demoActual && (demo.currentTime >= demoActual.fin || demo.currentTime < demoActual.inicio - 0.5)) {
+    demo.currentTime = demoActual.inicio;
+  }
+});
+$("demo-lento").addEventListener("click", () => {
+  const lento = $("demo-lento").getAttribute("aria-pressed") !== "true";
+  $("demo-lento").setAttribute("aria-pressed", String(lento));
+  demo.defaultPlaybackRate = demo.playbackRate = lento ? 0.5 : 1;   // default: se conserva al cambiar de video
+  demo.play().catch(() => {});
+});
+
 function actualizarReferencia() {
   const obj = objetivo();
+  mostrarDemo(obj);
   if (practica.modo === "gestos") return referenciaGesto(obj);
   const g = guia[obj];
   if (practica.modo === "palabras") pintarFichas();
@@ -725,7 +872,8 @@ function referenciaGesto(g) {
   $("ref-letra").setAttribute("data-largo", "");
   poner($("ref-letra"), g ? textoGesto(g) : "—");
   poner($("ref-nombre"), g ? textoGesto(g) : "Sin frases");
-  poner($("ref-desc"), g ? "Seña en movimiento, comparada con las ejecuciones de los videos del dataset."
+  poner($("ref-desc"), g ? (demos[g] ? "Mira el video: la seña completa, normal y luego lenta."
+                               : "Seña en movimiento, comparada con las ejecuciones de los videos del dataset.")
     : "Extrae videos con video_extractor.py para practicar frases.");
   poner($("ref-mov"), "Empieza con las manos abajo, haz el movimiento completo y continuo frente a la cámara " +
     "y vuelve a bajarlas: al bajarlas se evalúa.");
@@ -776,11 +924,13 @@ function evaluarPractica(e) {
   $("tarjeta-video").classList.toggle("coincide", tono === "bien");
 }
 
-// Diagnóstico del reconocedor de frases (calibración): la última evaluación queda a la vista bajo los subtítulos
-function mostrarDiagnosticoGesto(g) {
+// Diagnóstico del reconocedor de frases (calibración): la última evaluación queda a la vista bajo los subtítulos,
+// pero solo con el Diagnóstico activo (botón o tecla D). Sin él, solo se ve unos segundos el aviso de «Guardada…»
+let avisoHasta = 0;
+function mostrarDiagnosticoGesto(g, diagnostico) {
   const el = $("gesto-diag");
-  el.hidden = !g;
-  if (!g) return;
+  if (!g) { el.hidden = true; return; }
+  if (g.aviso) avisoHasta = Date.now() + 5000;
   const r = g.resultado;
   if (r && !r.mejor) {
     diagGesto = { tono: "no", texto: `Gesto descartado: ${r.motivo} · cierre: ${r.cierre}` };
@@ -793,7 +943,8 @@ function mostrarDiagnosticoGesto(g) {
       texto: `Candidato: ${textoGesto(r.mejor)} | Dist: ${r.distancia.toFixed(2)} | Sep: ${r.separacion.toFixed(2)} | ` +
              `Estado: ${r.aceptado ? "ACEPTADA" : "RECHAZADA, " + r.motivo} · ${r.cierre}` };
   }
-  if (g.aviso) diagGesto = { tono: g.aviso.startsWith("Guardada") ? "ok" : "no", texto: g.aviso };
+  if (g.aviso) diagGesto = { tono: g.aviso.startsWith("Guardada") ? "ok" : "no", texto: g.aviso, aviso: true };
+  el.hidden = !(diagnostico || (diagGesto?.aviso && Date.now() < avisoHasta));
   const boton = $("guardar-muestra");
   if (boton.disabled !== !g.muestra) boton.disabled = !g.muestra;
   poner($("muestras-propias"), `${g.propias} ${g.propias === 1 ? "muestra tuya" : "muestras tuyas"}`);
@@ -872,7 +1023,8 @@ function acierto(obj) {
     return;
   }
   if (practica.modo === "letras") {
-    celebrar("¡Correcto!", `${nombreSena(obj)} · racha ${practica.racha}`, 1800);
+    celebrar("¡Correcto!", `${nombreSena(obj)} · racha ${practica.racha}`, 1800,
+             practica.aleatorio ? letraAlAzar : undefined);
     return;
   }
   practica.indice += 1;
@@ -950,8 +1102,11 @@ function abrirGuia(abrir) {
   panel.classList.toggle("abierta", abrir);
   panel.setAttribute("aria-hidden", String(!abrir));
   $("guia-fondo").hidden = !abrir;
+  $("tab-guia").setAttribute("aria-selected", String(abrir));         // pestaña Guía de la barra inferior (móvil)
 }
 $("btn-guia").addEventListener("click", () => abrirGuia());
+$("tab-guia").addEventListener("click", () => abrirGuia());
+for (const b of document.querySelectorAll("[data-vista]")) b.addEventListener("click", () => abrirGuia(false));   // elegir Traducir / Práctica cierra la hoja
 $("guia-cerrar").addEventListener("click", () => abrirGuia(false));
 $("guia-fondo").addEventListener("click", () => abrirGuia(false));
 
@@ -966,13 +1121,47 @@ for (const b of document.querySelectorAll("[data-accion]")) {
   b.addEventListener("click", () => { enviar(b.dataset.accion); b.blur(); });
 }
 
+// Cámara: Pausar la apaga sin cerrar el servidor (el texto se conserva); Iniciar la vuelve a abrir
+function marcarMotor(enPausa) {
+  const b = $("btn-motor");
+  atributo(b, "data-motor", enPausa ? "pausado" : "activo");
+  poner($("motor-texto"), enPausa ? "Iniciar" : "Pausar");
+  b.title = enPausa ? "Encender la cámara y reanudar la traducción" : "Pausar la cámara (el servidor y el texto siguen)";
+  b.disabled = false;
+}
+function mostrarPausa() {
+  pausado = true;
+  motorListo = false;
+  ultimo = null;
+  limpiarEsqueleto();
+  detenerVideo();
+  mostrarDemo(null);
+  marcarMotor(true);
+  atributo($("conexion"), "data-conexion", "error");
+  poner($("conexion-texto"), "En pausa");
+  actualizarAviso();
+  if (practica.activa) actualizarReferencia();         // la demostración puede seguir viéndose en pausa
+}
+function iniciarCamara() {
+  $("btn-motor").disabled = true;                     // se reactiva al llegar el primer estado o un error
+  $("aviso-iniciar").hidden = true;
+  errorMotor = false;
+  aviso("Encendiendo la cámara…");
+  enviar("INICIAR");
+}
+$("btn-motor").addEventListener("click", () => {
+  if (pausado || errorMotor) iniciarCamara();
+  else { $("btn-motor").disabled = true; enviar("PAUSAR"); }
+});
+$("aviso-iniciar").addEventListener("click", iniciarCamara);
+
 let tDetener = null;
 $("btn-detener").addEventListener("click", () => {
   const b = $("btn-detener");
   if (!b.classList.contains("confirmar")) {          // dos pasos: evita apagar por accidente
     b.classList.add("confirmar");
-    poner($("detener-texto"), "¿Detener?");
-    tDetener = setTimeout(() => { b.classList.remove("confirmar"); poner($("detener-texto"), "Detener"); }, 3000);
+    poner($("detener-texto"), "¿Apagar?");
+    tDetener = setTimeout(() => { b.classList.remove("confirmar"); poner($("detener-texto"), "Apagar"); }, 3000);
     return;
   }
   clearTimeout(tDetener);
@@ -980,10 +1169,12 @@ $("btn-detener").addEventListener("click", () => {
   detenerVideo();
   enviar("SALIR");
   b.disabled = true;
-  poner($("detener-texto"), "Detenido");
+  $("btn-motor").disabled = true;
+  poner($("detener-texto"), "Apagado");
 });
 
-const TECLAS = { " ": "ESPACIO", Backspace: "BORRAR", c: "LIMPIAR", d: "DIAGNOSTICO", n: "RECALIBRAR", r: "RECALIBRAR" };
+const TECLAS = { " ": "ESPACIO", Backspace: "BORRAR", c: "LIMPIAR", l: "LEER", d: "DIAGNOSTICO", n: "RECALIBRAR",
+                 r: "RECALIBRAR" };
 document.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (ev.target instanceof HTMLInputElement) return;     // escribiendo una palabra de práctica
@@ -1010,6 +1201,8 @@ document.addEventListener("keydown", (ev) => {
 $("rostro-svg").innerHTML = ICONOS.sinrostro;
 poner($("mejor"), String(practica.mejor));
 construirChips();
+for (const b of $("velocidad").children) b.setAttribute("aria-checked", String(Number(b.dataset.segundos) === segundos));
+poner($("velocidad-ayuda"), `Sostén la seña quieta ${segundos.toLocaleString("es-MX")} s`);
 cambiarModo("letras");
 cambiarVista(leer("lsm-vista") === "practica" ? "practica" : "traducir");
 conectar();

@@ -2,23 +2,35 @@
 <html lang="es" data-theme="dark">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Traductor LSM</title>
+  <meta name="description" content="Traductor en tiempo real de Lengua de Señas Mexicana con cámara, manos y rostro.">
+  <!-- App instalable (PWA): manifiesto, color de la barra del sistema y metas para iOS -->
+  <meta name="theme-color" content="#090c13" id="meta-tema">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Traductor LSM">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/static/icono.svg">
+  <link rel="apple-touch-icon" href="/static/icono-180.png">
   <script>
     // Tema antes de pintar (sin destello): preferencia guardada o oscuro por defecto
     try { document.documentElement.dataset.theme = localStorage.getItem("lsm-tema") === "light" ? "light" : "dark"; }
     catch (_) { document.documentElement.dataset.theme = "dark"; }
+    document.getElementById("meta-tema").content = document.documentElement.dataset.theme === "light" ? "#edf1f8" : "#090c13";
   </script>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%231c1c1f'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%232ee59d' stroke-width='3' stroke-dasharray='42 60' stroke-linecap='round' transform='rotate(-90 16 16)'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+  <!-- Bricolage Grotesque: subtítulos, letra grande y títulos · Figtree: interfaz · JetBrains Mono: lecturas técnicas -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Figtree:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/static/estilos.css">
 </head>
 <body>
 <div class="app">
 
-  <!-- ================= Encabezado ================= -->
+  <!-- ================= Barra superior (app bar) ================= -->
   <header class="barra-sup">
     <div class="marca">
       <span class="logo" aria-hidden="true">
@@ -29,11 +41,19 @@
         <p>Lengua de Señas Mexicana · tiempo real</p>
       </div>
     </div>
+
+    <!-- Estado del motor: En vivo + FPS y latencia -->
+    <div class="estado-sis">
+      <span class="en-vivo" id="conexion" data-conexion="conectando"><i></i><span id="conexion-texto">Conectando</span></span>
+      <span class="fps" id="rendimiento" title="FPS del motor · latencia desde la captura hasta el dibujo"><b id="fps">--</b> FPS<span class="fps-lat"> · <b id="latencia">--</b> ms</span></span>
+    </div>
+
     <div class="sistema">
-      <span class="pastilla" id="voz" data-voz="desactivada" role="button" tabindex="0" title="Voz (Windows SAPI). Clic para probar las bocinas">
-        <svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+      <button class="pastilla interruptor-voz" id="voz" type="button" data-voz="desactivada" aria-pressed="true" title="Activar o silenciar la voz (al activarla dice «Voz activada»)">
+        <svg class="voz-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        <svg class="voz-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/></svg>
         <span id="voz-texto">Voz</span>
-      </span>
+      </button>
       <button class="interruptor-tema" id="btn-tema" type="button" role="switch" aria-checked="true" title="Tema claro / oscuro (T)" aria-label="Tema oscuro">
         <span class="pomo" aria-hidden="true"></span>
         <svg class="sol" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
@@ -42,48 +62,30 @@
       <button class="boton-icono" id="btn-guia" type="button" title="Guía del alfabeto (G)" aria-label="Guía del alfabeto">
         <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       </button>
-      <button class="boton-detener" id="btn-detener" type="button" title="Cerrar el traductor y apagar la cámara">
+      <button class="btn btn-motor" id="btn-motor" type="button" data-motor="activo" title="Pausar o reanudar la cámara (el servidor y el texto siguen)">
+        <svg class="icono-pausa" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+        <svg class="icono-iniciar" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg>
+        <span id="motor-texto">Pausar</span>
+      </button>
+      <button class="boton-detener" id="btn-detener" type="button" title="Cerrar el traductor por completo (servidor y cámara)">
         <svg viewBox="0 0 24 24"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><path d="M12 2v10"/></svg>
-        <span id="detener-texto">Detener</span>
+        <span id="detener-texto">Apagar</span>
       </button>
     </div>
   </header>
 
   <main class="escenario">
 
-    <!-- ================= Cámara + subtítulos ================= -->
+    <!-- ================= Visor: cámara + subtítulos ================= -->
     <section class="tarjeta video" id="tarjeta-video">
-      <div class="tarjeta-cabeza">
-        <div class="cabeza-izq">
-          <span class="en-vivo" id="conexion" data-conexion="conectando"><i></i><span id="conexion-texto">Conectando</span></span>
-          <span class="fps" id="rendimiento" title="FPS del motor · latencia desde la captura hasta el dibujo"><b id="fps">--</b> FPS · <b id="latencia">--</b> ms</span>
-        </div>
-        <div class="herramientas">
-          <button type="button" data-accion="ESPACIO" title="Espacio (barra espaciadora)">
-            <svg viewBox="0 0 24 24"><path d="M4 10v4h16v-4"/></svg><span>Espacio</span>
-          </button>
-          <button type="button" data-accion="BORRAR" title="Borrar (Backspace)">
-            <svg viewBox="0 0 24 24"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/><path d="m18 9-6 6M12 9l6 6"/></svg><span>Borrar</span>
-          </button>
-          <button type="button" data-accion="LIMPIAR" title="Limpiar todo (C)">
-            <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>Limpiar</span>
-          </button>
-          <span class="separador"></span>
-          <button type="button" class="solo-icono" data-accion="RECALIBRAR" title="Recalibrar rostro neutro (N)" aria-label="Recalibrar rostro">
-            <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
-          </button>
-          <button type="button" class="solo-icono" data-accion="DIAGNOSTICO" title="Diagnóstico (D)" aria-label="Diagnóstico">
-            <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-          </button>
-        </div>
-      </div>
-
       <div class="lienzo-marco">
         <div class="lienzo" id="lienzo">
           <img class="video-camara" id="video" alt="Vista de la cámara" decoding="async">
           <!-- src lo pone app.js: /video_feed (MJPEG del motor) -->
 
           <canvas id="esqueleto" aria-hidden="true"></canvas>
+          <!-- Esquinas del visor (decorativas): cambian de color con el estado (detectando, confirmado) -->
+          <div class="visor" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
           <span class="modo-esqueleto" id="modo-esqueleto" hidden>
             <svg viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/><path d="m1 1 22 22"/></svg>
             <span id="modo-esqueleto-texto">Solo esqueleto</span>
@@ -97,52 +99,103 @@
           <div class="aviso" id="aviso">
             <span class="giro" aria-hidden="true"></span>
             <p id="aviso-texto">Iniciando cámara…</p>
+            <button class="btn btn-primario btn-grande" id="aviso-iniciar" type="button" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg><span>Iniciar cámara</span>
+            </button>
           </div>
         </div>
       </div>
 
-      <!-- Subtítulos cinematográficos, centrados bajo el video -->
-      <div class="subtitulos vacio" id="texto" aria-live="polite"><span id="texto-contenido"></span><span class="cursor" aria-hidden="true"></span></div>
-      <div class="gesto-diag" id="gesto-diag" data-tono="nada" hidden title="Diagnóstico del reconocedor de frases (gestos.py); también en la terminal y en gestos_vivo.csv"></div>
+      <!-- Subtítulos cinematográficos: barra oscura bajo el video (en el móvil flotan sobre él).
+           La línea técnica «Candidato…» solo se ve con el Diagnóstico activo (botón o tecla D) -->
+      <div class="capa-subs">
+        <div class="pantalla-subs">
+          <div class="subtitulos vacio" id="texto" aria-live="polite"><span id="texto-contenido"></span><span class="cursor" aria-hidden="true"></span></div>
+        </div>
+        <div class="gesto-diag" id="gesto-diag" data-tono="nada" hidden title="Diagnóstico del reconocedor de frases (gestos.py); también en la terminal y en gestos_vivo.csv"></div>
+      </div>
     </section>
 
-    <!-- ================= Panel lateral ================= -->
+    <!-- ================= Barra de acciones: icono + etiqueta corta ================= -->
+    <div class="acciones" role="toolbar" aria-label="Acciones sobre el texto">
+      <button type="button" class="btn-tono" data-tono="azul" data-accion="ESPACIO" title="Espacio (barra espaciadora)">
+        <svg viewBox="0 0 24 24"><path d="M4 10v4h16v-4"/></svg><span>Espacio</span>
+      </button>
+      <button type="button" class="btn-tono" data-tono="ambar" data-accion="BORRAR" title="Borrar (Backspace)">
+        <svg viewBox="0 0 24 24"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/><path d="m18 9-6 6M12 9l6 6"/></svg><span>Borrar</span>
+      </button>
+      <button type="button" class="btn-tono" data-tono="rojo" data-accion="LIMPIAR" title="Limpiar todo (C)">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg><span>Limpiar</span>
+      </button>
+      <button type="button" class="btn-tono" data-tono="verde" data-accion="LEER" title="Leer en voz alta el texto escrito (L)">
+        <svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg><span>Leer</span>
+      </button>
+      <span class="separador" aria-hidden="true"></span>
+      <button type="button" class="btn-tono" data-tono="violeta" data-accion="RECALIBRAR" title="Recalibrar rostro neutro (N)">
+        <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg><span>Recalibrar</span>
+      </button>
+      <button type="button" class="btn-tono" data-tono="neutro" data-accion="DIAGNOSTICO" title="Diagnóstico (D): muestra tiempos, rasgos y el candidato de las frases">
+        <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span>Diagnóstico</span>
+      </button>
+      <!-- Solo aparece en Práctica > Frases: guarda tu último movimiento evaluado como muestra de esa frase -->
+      <button type="button" class="btn-tono accion-guardar" data-tono="azul" id="guardar-muestra" disabled title="Guarda tu último movimiento evaluado como referencia de esta frase (tecla G)">
+        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg><span>Guardar</span>
+      </button>
+    </div>
+
+    <!-- ================= Panel (en el móvil: hoja bajo la cámara) ================= -->
     <aside class="panel">
+      <!-- En el móvil esta barra queda fija abajo, como la de una app nativa -->
       <div class="pestanas" role="tablist" aria-label="Modo">
         <button type="button" role="tab" id="tab-traducir" data-vista="traducir" aria-selected="true">
-          <svg viewBox="0 0 24 24"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>Traducir
+          <svg viewBox="0 0 24 24"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg><span>Traducir</span>
         </button>
         <button type="button" role="tab" id="tab-practica" data-vista="practica" aria-selected="false">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>Práctica
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><span>Práctica</span>
+        </button>
+        <button type="button" role="tab" id="tab-guia" class="solo-movil" aria-selected="false" aria-controls="guia" title="Guía del alfabeto (G)">
+          <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>Guía</span>
         </button>
         <span class="pestana-indicador" aria-hidden="true"></span>
       </div>
 
       <!-- ---------- Vista: Traducir ---------- -->
-      <section class="tarjeta sena" id="sena" data-estado="ninguna" data-fase="nada">
-        <div class="anillo">
-          <svg viewBox="0 0 240 240" aria-hidden="true">
-            <circle class="pista" cx="120" cy="120" r="104"/>
-            <circle class="progreso" id="anillo" cx="120" cy="120" r="104"/>
-          </svg>
-          <div class="letra" id="letra">–</div>
-        </div>
-        <span class="lado-etiqueta" id="lado">Sin mano</span>
+      <!-- En escritorio es una sola tarjeta; en el móvil el anillo (#sena) flota como HUD sobre el visor -->
+      <div class="tarjeta sena-tarjeta">
+        <section class="sena" id="sena" data-estado="ninguna" data-fase="nada">
+          <div class="anillo">
+            <svg viewBox="0 0 240 240" aria-hidden="true">
+              <circle class="pista" cx="120" cy="120" r="104"/>
+              <circle class="progreso" id="anillo" cx="120" cy="120" r="104"/>
+            </svg>
+            <div class="letra" id="letra">–</div>
+          </div>
+          <span class="lado-etiqueta" id="lado">Sin mano</span>
+        </section>
         <p class="estado-texto" id="estado-texto">Muestra una seña a la cámara con cualquier mano</p>
         <div class="como" id="como" hidden>
           <span class="rotulo">Cómo se hace</span>
           <p id="como-desc"></p>
           <p class="como-mov" id="como-mov"></p>
         </div>
-      </section>
+        <div class="velocidad">
+          <span class="rotulo">Velocidad para escribir</span>
+          <div class="segmentado" role="radiogroup" aria-label="Velocidad para escribir" id="velocidad">
+            <button type="button" role="radio" data-segundos="1.5" data-color="azul">Lenta</button>
+            <button type="button" role="radio" data-segundos="1" data-color="violeta">Normal</button>
+            <button type="button" role="radio" data-segundos="0.7" data-color="ambar">Rápida</button>
+          </div>
+          <small id="velocidad-ayuda">Sostén la seña quieta 1 s</small>
+        </div>
+      </div>
 
       <!-- ---------- Vista: Práctica ---------- -->
       <section class="tarjeta practica" id="practica" hidden>
         <div class="practica-cabeza">
           <div class="segmentado" role="tablist" aria-label="Qué practicar">
-            <button type="button" data-modo-practica="letras" aria-selected="true">Letras</button>
-            <button type="button" data-modo-practica="palabras" aria-selected="false">Deletreo</button>
-            <button type="button" data-modo-practica="gestos" aria-selected="false">Frases</button>
+            <button type="button" data-modo-practica="letras" data-color="azul" aria-selected="true">Letras</button>
+            <button type="button" data-modo-practica="palabras" data-color="violeta" aria-selected="false">Deletreo</button>
+            <button type="button" data-modo-practica="gestos" data-color="verde" aria-selected="false">Frases</button>
           </div>
           <div class="marcador">
             <span title="Aciertos"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><b id="aciertos">0</b></span>
@@ -156,25 +209,25 @@
           <button type="button" class="flecha" id="letra-anterior" aria-label="Letra anterior"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
           <div class="tira" id="tira" role="listbox" aria-label="Letras"></div>
           <button type="button" class="flecha" id="letra-siguiente" aria-label="Letra siguiente"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
-          <button type="button" class="flecha" id="letra-azar" title="Letra al azar" aria-label="Letra al azar"><svg viewBox="0 0 24 24"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg></button>
+          <button type="button" class="flecha" id="letra-azar" aria-pressed="false" title="Modo aleatorio: al acertar pasa sola a otra letra (primero las que no has dominado)" aria-label="Modo aleatorio"><svg viewBox="0 0 24 24"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg></button>
         </div>
 
         <!-- Selector de frase / gesto dinámico (etiquetas de dataset/) -->
         <div class="selector-palabras" id="selector-gestos" hidden>
-          <div class="chips" id="chips-gestos"></div>
-          <p class="sin-gestos" id="sin-gestos" hidden>Aún no hay muestras en <code>dataset/</code>: extrae videos con <code>video_extractor.py</code>.</p>
+          <div class="niveles" id="chips-gestos"></div>
+          <p class="sin-gestos" id="sin-gestos" hidden>Aún no hay muestras en <code>datos/dataset/</code>: extrae videos con <code>video_extractor.py</code>.</p>
           <div class="grabar-muestra">
-            <button type="button" id="guardar-muestra" disabled title="Guarda tu último movimiento evaluado como referencia de esta frase (tecla G)">Guardar como muestra (G)</button>
             <span id="muestras-propias">0 muestras tuyas</span>
+            <small>Haz la frase completa y guárdala con el botón Guardar (tecla G).</small>
           </div>
         </div>
 
         <!-- Selector de palabra para deletrear -->
         <div class="selector-palabras" id="selector-palabras" hidden>
-          <div class="chips" id="chips-palabras"></div>
+          <div class="niveles" id="chips-palabras"></div>
           <form class="form-palabra" id="form-palabra" autocomplete="off">
             <input id="input-palabra" type="text" maxlength="12" placeholder="Otra palabra…" aria-label="Palabra para practicar">
-            <button type="submit">Practicar</button>
+            <button type="submit" class="btn btn-primario">Practicar</button>
           </form>
           <div class="fichas" id="fichas" aria-label="Progreso de la palabra"></div>
         </div>
@@ -182,7 +235,13 @@
         <!-- Tarjeta de referencia (gira al acertar) -->
         <div class="ref" id="ref">
           <div class="ref-interior">
-            <div class="ref-cara ref-frente">
+            <div class="ref-cara ref-frente" id="ref-frente">
+              <!-- Demostración: clip del video original (ui_panel.demostraciones); se repite en bucle -->
+              <div class="ref-demo" id="ref-demo" hidden>
+                <video id="demo-video" muted playsinline preload="metadata" aria-label="Demostración de la seña"></video>
+                <span class="demo-etiqueta"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg>Cómo se hace</span>
+                <button type="button" class="demo-lento" id="demo-lento" aria-pressed="false" title="Ver la demostración a media velocidad">0.5×</button>
+              </div>
               <div class="ref-imagen" aria-hidden="true">
                 <svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
                 <span class="ref-letra" id="ref-letra">A</span>
@@ -211,8 +270,8 @@
         </div>
       </section>
 
-      <!-- ---------- Manos (ambas vistas) ---------- -->
-      <section class="manos">
+      <!-- ---------- Manos (ambas vistas; en el móvil, parte del HUD del visor) ---------- -->
+      <section class="manos" aria-label="Manos detectadas">
         <div class="mano-mini" id="mini-Izq" data-lado="Izq" data-estado="ninguna">
           <i class="mini-punto"></i>
           <div class="mini-info"><span class="mini-lado">Izquierda</span><span class="mini-estado">Sin detectar</span></div>
@@ -248,7 +307,7 @@
   </main>
 </div>
 
-<!-- ================= Guía del alfabeto ================= -->
+<!-- ================= Guía del alfabeto (en el móvil: hoja inferior) ================= -->
 <div class="guia-fondo" id="guia-fondo" hidden></div>
 <aside class="guia" id="guia" aria-hidden="true">
   <div class="guia-cabeza">

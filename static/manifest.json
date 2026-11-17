@@ -1,0 +1,20 @@
+{
+  "name": "Traductor LSM",
+  "short_name": "Traductor LSM",
+  "description": "Traductor en tiempo real de Lengua de Señas Mexicana con cámara, manos y rostro.",
+  "lang": "es-MX",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#090c13",
+  "theme_color": "#090c13",
+  "categories": ["education", "accessibility", "utilities"],
+  "icons": [
+    { "src": "/static/icono.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/static/icono-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icono-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icono-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

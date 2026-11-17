@@ -122,15 +122,17 @@ class VozAsincrona:
         self._cond = threading.Condition()
         self._cerrando = False
         self._hilo = None
+        self.silencio = False             # la persona apagó la voz desde la interfaz (la frase en curso termina)
         if habilitada:
             self.estado = "iniciando"
             self._hilo = threading.Thread(target=self._bucle, name="voz-lsm", daemon=True)
             self._hilo.start()
 
-    def decir(self, texto, tipo="letra"):
-        """Encola una frase y regresa al instante. `tipo`: "letra" o "palabra"."""
+    def decir(self, texto, tipo="letra", forzar=False):
+        """Encola una frase y regresa al instante. `tipo`: "letra" o "palabra". `forzar`: se dice aunque la voz
+        esté silenciada (lo pidió la persona con el botón Leer)."""
         texto = limpiar_texto(texto).strip()
-        if not texto or self.estado in ("desactivada", "no disponible"):
+        if not texto or (self.silencio and not forzar) or self.estado in ("desactivada", "no disponible"):
             return
         with self._cond:
             if tipo == "palabra":
@@ -141,6 +143,17 @@ class VozAsincrona:
                     self._cola.remove(letras.pop(0))
             self._cola.append((texto, tipo))
             self._cond.notify()
+
+    def silenciar(self, si):
+        """Apaga (True) o enciende (False) la voz; al apagarla se descarta lo que esperaba en la cola."""
+        with self._cond:
+            self.silencio = si
+            if si:
+                self._cola.clear()
+
+    @property
+    def estado_web(self):
+        return "silenciada" if self.silencio and self.estado == "lista" else self.estado
 
     def cerrar(self):
         with self._cond:

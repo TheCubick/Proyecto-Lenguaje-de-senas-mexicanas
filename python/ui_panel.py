@@ -1,8 +1,10 @@
 """Capa de presentación de la interfaz web: qué se muestra de cada mano y el estado JSON que consume static/app.js
 (seña, progreso, coordenadas de las manos, estela del trazo, rostro). Python no dibuja nada: el navegador muestra
 su propio video de la cámara y dibuja el esqueleto encima con estas coordenadas."""
+import json
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import quote
 
 import mediapipe as mp
 
@@ -10,7 +12,11 @@ from classifier_face import AFIRM_AMPLITUD, CEJAS_UMBRAL, NEG_AMPLITUD
 from classifier_hands import GESTOS_DINAMICOS, LADOS, LETRAS_TIPEABLES, POSES_SILENCIOSAS, PUNTO_DE_POSE
 from gestos import etiquetas_dataset
 from traductor import SEGUNDOS_PARA_ESCRIBIR
+from video_extractor import CONFIG, DATOS, VIDEOS, a_segundos, leer_config, nombre_carpeta, ruta_video
 from voice_engine import limpiar_texto
+
+DEMOS = DATOS / "demostraciones.json"   # clips de referencia de las letras (las frases salen de dataset_config.json)
+DEMO_SIN_FIN = 6.0                      # s que se muestran de un corte sin "fin"
 
 CONEXIONES_MANO = sorted(tuple(c) for c in mp.solutions.hands.HAND_CONNECTIONS)   # pares de índices (huesos)
 
@@ -101,7 +107,38 @@ def config_web():
     return {"tipo": "config", "umbral_cejas": CEJAS_UMBRAL, "segundos": SEGUNDOS_PARA_ESCRIBIR,
             "conexiones": CONEXIONES_MANO, "bases": {g: sorted(p) for g, p in bases.items()},
             "guia": [{"clave": c, "desc": d, "mov": m} for c, d, m in GUIA],
-            "gestos": etiquetas_dataset()}       # palabras y frases con muestras en dataset/ (práctica dinámica)
+            "gestos": etiquetas_dataset(),       # palabras y frases con muestras en dataset/ (práctica dinámica)
+            "demos": demostraciones()[0]}
+
+
+def demostraciones():
+    """Clips del video original que muestran cómo se hace cada seña (Modo Práctica).
+
+    Devuelve ({clave: {"url", "inicio", "fin"}}, {nombre de video: ruta}). Letras: datos/demostraciones.json;
+    frases: el primer corte de cada palabra en dataset_config.json. Solo entran videos que existen en disco; el
+    segundo diccionario es la lista blanca que server.py sirve en /videos/ (nada fuera de datos/videos/)."""
+    pares = []                                       # (clave, video, inicio, fin)
+    try:
+        letras = json.loads(DEMOS.read_text(encoding="utf-8"))["letras"]
+        pares += [(c, letras["video"], a, b) for c, (a, b) in letras["tramos"].items()]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass                                         # sin archivo de letras: solo frases
+    try:
+        for e in leer_config(CONFIG):
+            inicio = a_segundos(e.get("inicio") or 0)
+            fin = a_segundos(e["fin"]) if e.get("fin") not in (None, "") else inicio + DEMO_SIN_FIN
+            pares.append((nombre_carpeta(e.get("palabra") or ""), str(e.get("video") or ""), inicio, fin))
+    except (SystemExit, ValueError, AttributeError):
+        pass                                         # configuración ausente o con errores: sin demos de frases
+    demos, videos = {}, {}
+    for clave, nombre, inicio, fin in pares:
+        if not clave or clave in demos:
+            continue
+        ruta = ruta_video(VIDEOS, nombre)
+        if ruta.is_file():
+            videos[nombre] = ruta
+            demos[clave] = {"url": f"/videos/{quote(nombre)}", "inicio": round(inicio, 2), "fin": round(fin, 2)}
+    return demos, videos
 
 
 def _normalizar(x, y, ancho, alto):

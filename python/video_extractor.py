@@ -93,6 +93,8 @@ REPOSO_MIN = 12                # Fotogramas (0.4 s) de reposo que separan dos ej
                                # normal y lenta duran 0.6-1.2 s; un salto suelto de 0.2 s ("mi nombre es") no corta
 EJECUCION_MIN = 30             # Fotogramas (1 s). Medido en "25 palabras": la ejecución real más corta dura 1.53 s;
                                # los restos de la seña anterior al inicio del corte, 0.07-0.7 s
+SINONIMOS = {"sí": "si", "uva": "uvas"}   # misma seña escrita distinto en las notas -> una sola carpeta (si no, el
+                                         # reconocedor las ve empatadas y rechaza ambas). Validar avisa de casos nuevos
 FORMATO = "v1: presente(2) + por lado Izq,Der: img(21x3 x/ancho,y/alto,z/ancho) + mundo(21x3 m); F=254"
 F = 2 + len(LADOS) * 2 * 63
 
@@ -148,10 +150,17 @@ def mmss(segundos):
 
 def nombre_carpeta(palabra):
     """'¿Cómo estás?' -> 'cómo_estás': minúsculas, sin signos, '_' en lugar de espacios (válido en Windows).
-    voice_engine.limpiar_texto ya convierte '_' en espacio al hablar."""
+    voice_engine.limpiar_texto ya convierte '_' en espacio al hablar. Aplica SINONIMOS ('sí' -> 'si')."""
     texto = unicodedata.normalize("NFC", str(palabra)).strip().lower()
     texto = re.sub(r"[^\w\s-]", "", texto)              # \w incluye acentos y ñ
-    return re.sub(r"\s+", "_", texto).strip("_")
+    texto = re.sub(r"\s+", "_", texto).strip("_")
+    return SINONIMOS.get(texto, texto)
+
+
+def _clave_parecida(palabra):
+    """'sí' y 'si', 'uva' y 'uvas' -> la misma clave: sin acentos ni 's' final (solo para avisar, no para unir)."""
+    sin_acentos = "".join(c for c in unicodedata.normalize("NFD", palabra) if unicodedata.category(c) != "Mn")
+    return sin_acentos.rstrip("s")
 
 
 def leer_config(ruta):
@@ -241,7 +250,10 @@ def validar(entradas, carpeta_videos):
             continue
         if video not in duraciones:
             ruta = ruta_video(carpeta_videos, video)
-            duraciones[video] = duracion(ruta) if ruta.is_file() else None
+            # Nombre EXACTO: Windows no distingue mayúsculas y "Frutas en lengua...mp4" abría en silencio el otro
+            # video "FRUTAS EN LENGUA...mp4" (2026-11-12)
+            exacto = ruta.is_file() and video in {p.name for p in ruta.parent.iterdir()}
+            duraciones[video] = duracion(ruta) if exacto else None
         total = duraciones[video]
         if total is None:
             nombres = [p.name for p in [*carpeta_videos.glob("*"), *(carpeta_videos / LISTO).glob("*")]]
@@ -277,6 +289,12 @@ def validar(entradas, carpeta_videos):
     for a, b in zip(orden, orden[1:]):                   # casi siempre un tiempo mal escrito
         if a.video == b.video and a.palabra != b.palabra and b.inicio < a.fin - 0.05:
             avisos.append(f"entradas {a.n} ({a.palabra}) y {b.n} ({b.palabra}) se traslapan en {a.video}")
+    parecidas = {}
+    for c in unicos:
+        parecidas.setdefault(_clave_parecida(c.palabra), set()).add(c.palabra)
+    for grupo in parecidas.values():
+        if len(grupo) > 1:
+            avisos.append(f"etiquetas casi iguales {sorted(grupo)}: si son la misma seña, agrégalas a SINONIMOS")
     cuenta = {}
     for c in unicos:
         cuenta[c.palabra] = cuenta.get(c.palabra, 0) + 1

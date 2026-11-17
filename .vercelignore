@@ -1,0 +1,7 @@
+# Vercel publica solo la interfaz (static/), el motor del navegador (web/) y su configuración.
+# Todo lo demás (Python, venv, videos, dataset crudo, documentos) se queda fuera.
+/*
+!/static
+!/web
+!/vercel.json
+/web/pruebas

@@ -54,6 +54,35 @@ Al arrancar, la terminal muestra `Traductor LSM en http://localhost:5000` y el *
 
 > La voz usa las voces SAPI5 de Windows (por ejemplo *Microsoft Sabina*, español de México). Si no hay ninguna en español, el programa funciona igual y el encabezado muestra **Sin voz**.
 
+## Versión web (Vercel): todo corre en el navegador
+
+La misma interfaz funciona sin Python: el reconocimiento se porta a JavaScript en `web/motor/` y corre en el navegador de quien la abre (MediaPipe Tasks 0.10.18 en WASM/GPU, la misma versión con la que se extrajo el dataset). El video de la cámara nunca sale del dispositivo.
+
+- `static/app.js` decide dónde está el motor: en `localhost` usa `server.py` por WebSocket; publicado (o con `?motor=navegador`) importa `web/motor/motor.js`, que se presenta como el mismo WebSocket (mismos mensajes `config` / `estado` / `pausa` / `error` y mismas acciones). La interfaz es una sola.
+- `web/motor/`: `manos.js`, `rostro.js` (con su propio solvePnP: en el navegador no hay OpenCV), `vector.js`, `gestos.js` (DTW), `traductor.js`, `presentacion.js`, `voz.js` (Web Speech API) y `motor.js` (cámara con `getUserMedia` + MediaPipe + el bucle de `main.py`). Es un port 1:1 de `python/`: mismos umbrales y mismo orden de decisión.
+- `web/datos/`: plantillas del DTW ya como descriptor (`plantillas.bin`, 4.1 MB) y la configuración. Se regeneran tras cambiar el dataset con `.\venv\Scripts\python.exe python\exportar_web.py`.
+- Verificado contra Python con fixtures de 3 976 fotogramas de los videos (alfabeto y 25 frases): mismas señas, mismo texto fotograma a fotograma, mismas 50 decisiones del DTW y mismos gestos del rostro (los ángulos del solvePnP difieren < 0.00001°).
+
+**Publicar en Vercel:** `vercel.json` sirve `static/index.html` en `/`, y `.vercelignore` sube solo `static/`, `web/` y `vercel.json` (sin Python, venv ni videos). Opciones:
+
+```powershell
+# A) Desde la terminal (pide iniciar sesión la primera vez)
+npx vercel           # vista previa
+npx vercel --prod    # producción
+
+# B) Desde GitHub: importar el repositorio en vercel.com > Add New > Project,
+#    Framework Preset "Other", sin Build Command ni Output Directory. Cada push publica solo.
+```
+
+**Probarlo en tu PC sin Python corriendo** (la cámara solo puede tenerla uno de los dos):
+
+```powershell
+.\venv\Scripts\python.exe -m http.server 8000
+# abrir http://localhost:8000/static/index.html?motor=navegador
+```
+
+Diferencias con la versión local: el navegador pide permiso de cámara; la primera carga descarga ~25 MB (MediaPipe y modelos, luego quedan en caché); no hay videos de demostración en Práctica (los videos de terceros no se publican); las muestras propias de frases (botón Guardar / G) se guardan en el almacenamiento del navegador, no en `datos/dataset/`; la voz usa las voces del sistema que exponga el navegador y suena después de la primera interacción con la página.
+
 ## Arquitectura
 
 ```
@@ -110,6 +139,12 @@ El anillo de progreso cambia de color según cuánto falta para registrar la se�
 4. Al registrarse la seña correcta, la tarjeta gira, sale confeti y suben los aciertos y la racha. Si registras otra letra, la racha vuelve a cero.
 
 **Frases (tarjeta "Dinámica").** Empieza con las manos abajo, haz el movimiento completo y continuo, y bájalas: al bajarlas, `gestos.py` compara el movimiento (remuestreado a 30 fotogramas, como el dataset) contra las ejecuciones extraídas de los videos y te dice si coincide o a qué frase se pareció. Es un comparador por plantillas (DTW) mientras se entrena la LSTM; la lista de frases sale de las carpetas de `dataset/`.
+
+**Demostraciones.** La tarjeta de referencia muestra el fragmento del video original donde se hace la seña (letras: video *Alfabeto*, tramos en `datos/demostraciones.json`; frases: el corte de `dataset_config.json`), en bucle y con botón **0.5×** para verla lento. Las frases y las palabras de deletreo se agrupan de la más fácil a la más difícil (Básico, Intermedio, Avanzado). En **Letras**, el botón aleatorio deja activo un modo que, al acertar, pasa solo a otra letra que aún no hayas dominado.
+
+**Leer el texto.** El botón **Leer** (tecla **L**), junto a Espacio, Borrar y Limpiar, dice en voz alta todo lo escrito; suena aunque la voz automática esté silenciada.
+
+**Controles del encabezado.** **Voz** activa o silencia la voz (al activarla dice «Voz activada»). **Pausar / Iniciar** apaga y vuelve a encender la cámara sin cerrar el programa (el texto se conserva). **Apagar** cierra todo. En Traducir, **Velocidad para escribir** elige cuánto sostener una seña: Lenta 1.5 s, Normal 1 s, Rápida 0.7 s. Las preferencias se recuerdan en el navegador.
 
 **Muestras propias.** Después de hacer la frase (cuando el cuadro de diagnóstico muestre la evaluación), pulsa **Guardar como muestra** o la tecla **G**: tu movimiento se guarda como `datos/dataset/<frase>/pablo_seq_XX.npy` y se usa como referencia desde ese momento. Con 3-4 repeticiones propias por frase el comparador reconoce tus manos y tu ritmo. En Práctica > Frases la tecla G guarda; en los demás modos abre la guía.
 
@@ -301,11 +336,16 @@ Proyecto/
 │   ├── ui_panel.py          # Estado JSON con las coordenadas de las manos
 │   ├── video_extractor.py   # Herramienta: dataset para la LSTM desde videos
 │   ├── auto_etiquetador.py  # Herramienta: propone cortes a partir de la voz de los videos (Whisper)
-│   └── data_augmentation.py # Herramienta: variantes sintéticas (ruido, ritmo, escala) para entrenar
-├── static/                  # Interfaz web (la sirve python/server.py)
-│   ├── index.html           # Estructura
+│   ├── data_augmentation.py # Herramienta: variantes sintéticas (ruido, ritmo, escala) para entrenar
+│   └── exportar_web.py      # Herramienta: plantillas y config para la versión web (web/datos/)
+├── static/                  # Interfaz web (la sirve python/server.py; en Vercel, vercel.json)
+│   ├── index.html           # Estructura (app shell + PWA: manifest.json, iconos)
 │   ├── estilos.css          # Temas claro/oscuro, maquetación y animaciones
-│   └── app.js               # Cliente WebSocket, video MJPEG, esqueleto, tema y Modo Práctica
+│   └── app.js               # Cliente (WebSocket o motor del navegador), video, esqueleto, tema y Modo Práctica
+├── web/                     # Versión web: el motor portado a JavaScript (corre en el navegador)
+│   ├── motor/               # manos, rostro, vector, gestos, traductor, presentacion, voz, motor
+│   └── datos/               # plantillas.bin / .json y config.json (los genera exportar_web.py)
+├── vercel.json, .vercelignore  # Publicación en Vercel (solo static/ y web/)
 ├── datos/
 │   ├── dataset_config.json  # Cortes de los videos: video, palabra, inicio, fin (se versiona)
 │   ├── videos/              # Videos de entrada y notas de tiempos; los terminados pasan a videos/listo/ (no se suben)

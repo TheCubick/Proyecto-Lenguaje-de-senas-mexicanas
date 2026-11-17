@@ -7,7 +7,9 @@ from classifier_face import AnalizadorFacial
 from classifier_hands import LADOS, LETRAS_TIPEABLES, CanalMano, SeguidorManos, otro_lado
 from gestos import ReconocedorGestos, texto_frase
 
-SEGUNDOS_PARA_ESCRIBIR = 1.5   # Tiempo que hay que sostener una seña estática QUIETA para registrarla
+SEGUNDOS_PARA_ESCRIBIR = 1.0   # Tiempo que hay que sostener una seña estática QUIETA para registrarla. La interfaz
+                               # lo cambia (Lenta 1.5 / Normal 1.0 / Rápida 0.7); antes del 2026-11-10 era 1.5
+VELOCIDAD_MIN, VELOCIDAD_MAX = 0.5, 2.0   # límites que acepta el servidor para ese tiempo
 
 
 ACCION_NEGACION = "LETRA" # Qué borra "No" con la cabeza: "LETRA", "PALABRA" o "TODO"

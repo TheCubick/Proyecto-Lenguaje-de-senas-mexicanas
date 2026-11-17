@@ -1,0 +1,6 @@
+{
+  "name": "traductor-lsm-web",
+  "private": true,
+  "type": "module",
+  "description": "Motor del Traductor LSM en el navegador (port de python/). Sin dependencias ni compilación: módulos ES."
+}
